@@ -1,0 +1,27 @@
+{
+  "name": "lapp",
+  "version": "0.1.0",
+  "description": "CLI for LAPP (Local AI Provider Profiles). Thin wrapper over @openlapp/lapp.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "lapp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc --emitDeclarationOnly && tsup",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@openlapp/lapp": "workspace:*"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0"
+  }
+}

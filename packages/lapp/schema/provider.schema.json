@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lapp.dev/schema/provider.schema.json",
+  "title": "LAPP provider.json",
+  "type": "object",
+  "required": ["id", "protocol", "baseUrl"],
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "protocol": { "type": "string", "minLength": 1 },
+    "baseUrl": { "type": "string", "minLength": 1 },
+    "links": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": "string" },
+        "secret": { "type": "string" },
+        "header": { "type": "string" },
+        "queryParam": { "type": "string" }
+      }
+    },
+    "requestHeaders": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

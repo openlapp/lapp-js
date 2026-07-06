@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lapp.dev/schema/models.schema.json",
+  "title": "LAPP models.json",
+  "type": "object",
+  "required": ["models"],
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "updatedAt": { "type": "string" },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "source": { "enum": ["provider", "manual"] },
+          "name": { "type": "string" },
+          "aliases": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "type": { "type": "string" },
+          "inputModalities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "outputModalities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "contextWindow": { "type": "integer", "minimum": 0 },
+          "maxOutputTokens": { "type": "integer", "minimum": 0 },
+          "enabled": { "type": "boolean" },
+          "protocol": { "type": "string" },
+          "links": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

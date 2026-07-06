@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lapp.dev/schema/global.schema.json",
+  "title": "LAPP global.json",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "defaultModel": { "$ref": "#/$defs/modelRef" },
+    "defaultEmbeddingModel": { "$ref": "#/$defs/modelRef" },
+    "defaultImageModel": { "$ref": "#/$defs/modelRef" },
+    "defaultTextToSpeechModel": { "$ref": "#/$defs/modelRef" },
+    "defaultVideoModel": { "$ref": "#/$defs/modelRef" }
+  },
+  "$defs": {
+    "modelRef": {
+      "type": "object",
+      "required": ["providerId", "model"],
+      "additionalProperties": true,
+      "properties": {
+        "providerId": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
