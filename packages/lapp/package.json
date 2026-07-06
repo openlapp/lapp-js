@@ -19,6 +19,15 @@
     "schema",
     "README.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openlapp/lapp-js.git",
+    "directory": "packages/lapp"
+  },
+  "keywords": ["lapp", "ai", "llm", "provider", "profile", "sdk", "openai", "anthropic"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "copy-schema": "node ../../scripts/copy-schema.mjs",
     "prebuild": "pnpm run copy-schema",

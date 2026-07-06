@@ -4,16 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`lapp-js` is a TypeScript monorepo implementing the LAPP (Local AI Provider Profiles) convention: a **client SDK** (`@openlapp/lapp`) that reads, validates, writes, manages `.lapp` profiles and calls providers directly, plus a **thin CLI** (`lapp`) that wraps the SDK. It is explicitly **not a gateway** — no persistent server, no proxying for other apps, no billing.
+`lapp-js` is a TypeScript monorepo implementing the LAPP (Local AI Provider Profiles) convention: a **client SDK** (`@openlapp/lapp`) that reads, validates, writes, manages `.lapp` profiles and calls providers directly, plus a **thin CLI** (`@openlapp/cli`, installs the `lapp` command) that wraps the SDK. It is explicitly **not a gateway** — no persistent server, no proxying for other apps, no billing.
 
-The canonical LAPP spec, JSON Schemas, example profiles, and validator fixtures live in a **sibling repo** at `../lapp` (see `scripts/lapp-paths.mts`). This repo imports schemas from there and its tests load `../lapp/examples` and `../lapp/tools/validator/fixtures`. The build copies schemas into `packages/lapp/schema/` so the published package is self-contained.
+The canonical LAPP spec, JSON Schemas, example profiles, and validator fixtures live in a **sibling repo** at `../lapp` (see `scripts/lapp-paths.mts`). This repo imports schemas from there and its tests load `../lapp/examples` and `../lapp/tools/validator/fixtures`. The build copies schemas into `packages/lapp/schema/` so the published package is self-contained. CI checks out both repos as siblings (see `.github/workflows/`).
+
+## CI / CD
+
+- **`.github/workflows/ci.yml`** — runs `build` + `test` on every push/PR to `main`, across Node 18/20/22.
+- **`.github/workflows/release.yml`** — triggers on `v*` tags (or `workflow_dispatch`): resolves version → tests → sets version in both `package.json` → builds → publishes `@openlapp/lapp` then `@openlapp/cli` to npm → creates a GitHub Release. Requires `NPM_TOKEN` secret in the repo.
 
 ## Commands
 
 Run from repo root. Workspace uses **pnpm** (`packageManager: pnpm@10.29.2`), Node `>=18.18.0`.
 
 - `pnpm install` — install workspace deps.
-- `pnpm build` — builds `@openlapp/lapp` then `lapp` (filtered order matters: CLI depends on the SDK). The SDK's `prebuild` runs `copy-schema` first.
+- `pnpm build` — builds `@openlapp/lapp` then `@openlapp/cli` (filtered order matters: CLI depends on the SDK). The SDK's `prebuild` runs `copy-schema` first.
 - `pnpm test` — run vitest once (`vitest run`). Tests are in `packages/**/test/**/*.test.ts`.
 - `pnpm test:watch` — vitest watch mode.
 - Run a single test file: `pnpm vitest run packages/lapp/test/client.test.ts`
@@ -38,9 +43,9 @@ The SDK is the product; the CLI is only its first consumer. **All profile logic 
 - **`env-export/`** — `exportEnv` emits shell statements (bash/zsh/fish/powershell/cmd) for the profile's secrets, for sourcing into tools that read keys from env (Aider, Continue.dev, Codex CLI). Same opt-in policy; plaintext requires both `resolve` and `allowPlaintext`.
 - **`client/`** — `createLappClient({ profile, provider, model })` resolves a target, picks a protocol adapter, exposes `chat` / `rawChat` / `testConnection`. Requests go **directly** to the provider. Three adapters: `openai-chat`, `openai-responses`, `anthropic-messages`, all implementing the `ProtocolAdapter` interface in `adapter.ts` (`buildRequest` + `parseResponse` into the unified `LappResponse` shape with `raw` preserved). Unsupported protocols throw `UnsupportedProtocolError`.
 
-### CLI (`packages/cli/src/index.ts`)
+### CLI (`packages/cli/src/index.ts`) — published as `@openlapp/cli`
 
-Single-file CLI. Parse args → call SDK → print. Write commands always show the `planChanges` diff first and require `--yes` to apply (or `--dry-run` to only preview). Secrets are redacted by default; `--reveal-secrets` opts in. Error text is scrubbed with `redactAll` (regex `SECRET_PATTERNS`) as defense-in-depth before printing — note the model's reply in `chat` is printed **verbatim** and deliberately not redacted (redaction would mangle legitimate key-shaped content).
+Single-file CLI. Installs the `lapp` binary. Parse args → call SDK → print. Write commands always show the `planChanges` diff first and require `--yes` to apply (or `--dry-run` to only preview). Secrets are redacted by default; `--reveal-secrets` opts in. Error text is scrubbed with `redactAll` (regex `SECRET_PATTERNS`) as defense-in-depth before printing — note the model's reply in `chat` is printed **verbatim** and deliberately not redacted (redaction would mangle legitimate key-shaped content).
 
 ### Cross-cutting rules to preserve
 

@@ -1,0 +1,102 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.0, 0.2.0-alpha.1)"
+        required: true
+        type: string
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # needed for GitHub Release creation
+      id-token: write  # optional, for npm provenance
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lapp-js
+
+      # load.test.ts needs the sibling repo examples + fixtures.
+      - uses: actions/checkout@v4
+        with:
+          repository: openlapp/lapp
+          path: lapp
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: pnpm
+          cache-dependency-path: lapp-js/pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: lapp-js
+
+      - run: pnpm test
+        working-directory: lapp-js
+
+      # Derive semver from either workflow_dispatch input or the pushed tag.
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            V="${{ inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          # Validate semver shape — allow pre-release suffixes (-alpha.1 etc.)
+          if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "invalid version: $V (expected x.y.z or x.y.z-prerelease)"
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+
+      # Write the resolved version into both package.json files so the
+      # published packages carry the correct version.
+      - name: Set version
+        working-directory: lapp-js
+        run: |
+          cd packages/lapp
+          npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+          cd ../cli
+          npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - run: pnpm build
+        working-directory: lapp-js
+
+      # Publish SDK first — CLI's workspace:* dep must resolve to the just-published version.
+      - name: Publish @openlapp/lapp
+        working-directory: lapp-js
+        run: pnpm publish --filter @openlapp/lapp --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @openlapp/cli
+        working-directory: lapp-js
+        run: pnpm publish --filter @openlapp/cli --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true

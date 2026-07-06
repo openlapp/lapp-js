@@ -1,5 +1,5 @@
 {
-  "name": "lapp",
+  "name": "@openlapp/cli",
   "version": "0.1.0",
   "description": "CLI for LAPP (Local AI Provider Profiles). Thin wrapper over @openlapp/lapp.",
   "license": "MIT",
@@ -12,6 +12,15 @@
     "dist",
     "README.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openlapp/lapp-js.git",
+    "directory": "packages/cli"
+  },
+  "keywords": ["lapp", "ai", "llm", "provider", "profile", "cli"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc --emitDeclarationOnly && tsup",
     "clean": "rimraf dist"

@@ -5,7 +5,7 @@ TypeScript SDK and CLI workspace for LAPP.
 This repository is planned as the first real consumer of the LAPP protocol:
 
 - `@openlapp/lapp`: core SDK for reading, writing, validating, and using LAPP profiles.
-- `lapp`: thin CLI wrapper over the SDK.
+- `@openlapp/cli`: thin CLI wrapper over the SDK (installs the `lapp` command).
 
 ## Current Decision
 
@@ -34,3 +34,12 @@ The CLI must stay thin. All profile parsing, writing, validation, env export, an
 - Unified response shape with raw provider response preserved.
 
 See `docs/sdk-cli-design.md` and `docs/implementation-todo.md`.
+
+## Releasing
+
+1. Tag a release: `git tag v0.1.0 && git push origin v0.1.0`
+2. CI runs tests → builds → publishes both packages to npm → creates a GitHub Release.
+
+Or trigger manually from the [Actions tab](https://github.com/openlapp/lapp-js/actions/workflows/release.yml) with the `workflow_dispatch` input.
+
+**Prerequisite:** Add an `NPM_TOKEN` secret to the repo (Settings → Secrets and variables → Actions).

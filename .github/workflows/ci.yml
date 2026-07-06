@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lapp-js
+
+      # load.test.ts depends on sibling repo examples + fixtures.
+      - uses: actions/checkout@v4
+        with:
+          repository: openlapp/lapp
+          path: lapp
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+          cache-dependency-path: lapp-js/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: lapp-js
+
+      - run: pnpm build
+        working-directory: lapp-js
+
+      - run: pnpm test
+        working-directory: lapp-js

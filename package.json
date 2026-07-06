@@ -9,7 +9,7 @@
     "node": ">=18.18.0"
   },
   "scripts": {
-    "build": "pnpm -r --filter @openlapp/lapp --filter lapp run build",
+    "build": "pnpm -r --filter @openlapp/lapp --filter @openlapp/cli run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
