@@ -1,13 +1,6 @@
-# lapp-js
+# Getting started with lapp-js
 
-TypeScript SDK and CLI workspace for LAPP (Local AI Provider Profiles) **v1.0.0**.
-
-> **Languages:** [English](README.md) | [中文](docs/zh/getting-started.md)
-
-- `@openlapp/lapp`: core SDK for reading, writing, validating, and using LAPP profiles.
-- `@openlapp/cli`: thin CLI wrapper over the SDK (installs the `lapp` command).
-
-`lapp-js` is a client, not a gateway: there is no persistent server, no proxying for other apps, and no billing.
+`lapp-js` is the TypeScript implementation of LAPP (Local AI Provider Profiles). It gives you a client SDK (`@openlapp/lapp`) and a thin CLI (`lapp`) for reading, validating, and writing `.lapp` profiles, then sending requests directly to configured providers.
 
 ```text
 .lapp profile
@@ -16,13 +9,29 @@ TypeScript SDK and CLI workspace for LAPP (Local AI Provider Profiles) **v1.0.0*
   -> provider API
 ```
 
-## Quick start
+`lapp-js` is a client, not a gateway: there is no persistent server, no proxying for other apps, and no billing.
 
-### CLI
+## Install
+
+CLI:
 
 ```bash
 npm install -g @openlapp/cli
+```
 
+SDK in a project:
+
+```bash
+npm install @openlapp/lapp
+```
+
+Requires Node 18.18 or newer.
+
+## Hello, CLI
+
+Create a profile at `~/.lapp` and chat with the default model:
+
+```bash
 lapp init ~/.lapp \
   --provider openai \
   --protocol openai-chat-completions \
@@ -31,14 +40,14 @@ lapp init ~/.lapp \
   --model gpt-4o \
   --yes
 
+lapp validate
 lapp chat "Say hi in five words."
+lapp doctor
 ```
 
-### SDK
+Write commands always show a change plan first and require `--yes` to apply (or `--dry-run` to preview only).
 
-```bash
-npm install @openlapp/lapp
-```
+## Hello, SDK
 
 ```ts
 import { loadProfile, createLappClient, listModels } from "@openlapp/lapp";
@@ -64,7 +73,7 @@ for await (const ev of client.stream({ messages: [{ role: "user", content: "Hell
 
 ## Local servers (Ollama, LM Studio, vLLM)
 
-Local OpenAI-compatible servers don't need authentication. Use `--no-auth` to skip the auth header:
+Local OpenAI-compatible servers usually do not need authentication. Use `--no-auth` when initializing:
 
 ```bash
 lapp init ~/.lapp \
@@ -76,7 +85,7 @@ lapp init ~/.lapp \
   --yes
 ```
 
-See [docs/local-providers.md](docs/local-providers.md) for a full walkthrough.
+See [local-providers.md](local-providers.md) for a full walkthrough.
 
 ## Supported protocols
 
@@ -86,26 +95,19 @@ See [docs/local-providers.md](docs/local-providers.md) for a full walkthrough.
 | `openai-responses` | yes | yes | yes | yes (`GET /models`) |
 | `anthropic-messages` | yes | yes | yes | no public API; set `provider.links.models` to override |
 
+## Where to go next
+
+- [CLI reference](cli.md) — every `lapp` command, flag, and exit code
+- [SDK tour](sdk.md) — how to use `@openlapp/lapp` from TypeScript
+- [Configuration](configuration.md) — profile anatomy, path resolution, multi-protocol providers
+- [Security](security.md) — secret schemes, redaction, and opt-in resolution
+- [Protocols](protocols.md) — per-protocol behavior and capability inference
+- [Local providers](local-providers.md) — Ollama, LM Studio, vLLM
+- [Troubleshooting](troubleshooting.md) — typed errors, warnings, and FAQ
+- [Migrating](migrating.md) — changes and known limitations since v1.0.0
+
 ## v1 known limitations
 
 - `keychain://` and `file://` secret schemes are parsed but not resolved (only `plaintext` and `env://`).
 - Capability inference for synced models is a best-effort heuristic (prefix + token match); providers that don't expose capability metadata can be augmented by editing `models.json` directly.
 - `err.raw` on chat errors is deep-scrubbed for common key shapes, but providers that embed credentials in non-string fields are not protected.
-
-## Documentation
-
-- [Getting started](docs/getting-started.md) | [中文](docs/zh/getting-started.md)
-- [CLI reference](docs/cli.md) | [中文](docs/zh/cli.md)
-- [SDK tour](docs/sdk.md) | [中文](docs/zh/sdk.md)
-- [Configuration](docs/configuration.md) | [中文](docs/zh/configuration.md)
-- [Security](docs/security.md) | [中文](docs/zh/security.md)
-- [Protocols](docs/protocols.md) | [中文](docs/zh/protocols.md)
-- [Local providers](docs/local-providers.md) | [中文](docs/zh/local-providers.md)
-- [Troubleshooting](docs/troubleshooting.md) | [中文](docs/zh/troubleshooting.md)
-- [Migrating](docs/migrating.md) | [中文](docs/zh/migrating.md)
-- [API reference](packages/lapp/docs/api.md)
-- [CHANGELOG](CHANGELOG.md)
-
-## License
-
-MIT

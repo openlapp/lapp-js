@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "lint": "pnpm -r run lint",
-    "clean": "pnpm -r run clean"
+    "clean": "pnpm -r run clean",
+    "verify:docs": "tsx scripts/verify-cli-docs.mts && tsx scripts/verify-protocols.mts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

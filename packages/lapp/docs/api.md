@@ -4,6 +4,8 @@ This is a quick tour of the v1 public API. TypeScript definitions in
 `dist/index.d.ts` are the source of truth; this document is a navigation
 index and examples guide.
 
+For a narrative walkthrough, see the [SDK tour](../sdk.md).
+
 ## Loading profiles
 
 ### `loadProfile(options?) → LappProfile`
