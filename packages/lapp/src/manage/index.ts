@@ -10,6 +10,7 @@
  */
 
 import type {
+  GlobalConfig,
   LappProfile,
   LappProvider,
   ModelEntry,
@@ -27,7 +28,8 @@ export interface CreateProfileInput {
 
 export interface ProviderInput {
   id: string;
-  protocol: string;
+  protocol?: string;
+  protocols?: ProviderConfig["protocols"];
   baseUrl: string;
   name?: string;
   enabled?: boolean;
@@ -52,6 +54,8 @@ export interface ModelInput {
   maxOutputTokens?: number;
   enabled?: boolean;
   protocol?: string;
+  links?: ProviderConfig["links"];
+  metadata?: Record<string, unknown>;
 }
 
 export interface ModelTarget {
@@ -115,7 +119,18 @@ export function upsertProvider(profile: LappProfile, input: ProviderInput): Lapp
     ...(existing?.config ?? {}),
     schemaVersion: "1.0",
     id: input.id,
-    protocol: input.protocol,
+    protocol: input.protocol ?? (
+      typeof input.protocols?.[0] === "string"
+        ? input.protocols[0]
+        : typeof input.protocols?.[0] === "object"
+          ? input.protocols[0].id
+          : existing?.config.protocol
+    ) ?? "",
+    // Overlay-only: preserve the existing multi-protocol array unless the
+    // caller explicitly passes `protocols`. Passing the legacy single-string
+    // `protocol` does NOT collapse a hand-edited multi-protocol array to
+    // `[input.protocol]` — the user can still edit the array directly.
+    protocols: input.protocols ?? existing?.config.protocols ?? (input.protocol ? [input.protocol] : undefined),
     baseUrl: input.baseUrl,
     ...(input.name !== undefined ? { name: input.name } : {}),
     ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
@@ -152,6 +167,26 @@ export function removeProvider(profile: LappProfile, providerId: string): LappPr
   return next;
 }
 
+/**
+ * Replace a provider's entire models list with the given config.
+ * Used by the sync flow to apply a freshly-fetched model set without going
+ * through per-entry upserts. Pass `null` to clear models.json (the writer
+ * will then omit it on the next pass).
+ */
+export function replaceProviderModels(
+  profile: LappProfile,
+  providerId: string,
+  models: ModelsConfig | null,
+): LappProfile {
+  const next = clone(profile);
+  const provider = next.providers.find((p) => p.config.id === providerId);
+  if (!provider) {
+    throw new Error(`provider not found: ${providerId}`);
+  }
+  provider.models = models;
+  return next;
+}
+
 /** Insert or update a model under a provider (by id). Returns a new profile. */
 export function upsertModel(profile: LappProfile, input: ModelInput): LappProfile {
   const next = clone(profile);
@@ -160,6 +195,11 @@ export function upsertModel(profile: LappProfile, input: ModelInput): LappProfil
     throw new Error(`provider not found: ${input.providerId}`);
   }
   const models: ModelsConfig = provider.models ?? { schemaVersion: "1.0", models: [] };
+  // Clear the internal sync marker on any manage edit. A `sync → manage`
+  // sequence must not cause the writer to re-stamp `updatedAt` for what is
+  // actually a user-driven edit; the marker is owned by `applySyncedModels`
+  // and the writer drops it on every read regardless (defense in depth).
+  delete (models as { __lappUpdatedAtSource?: unknown }).__lappUpdatedAtSource;
   const idx = models.models.findIndex((m) => m.id === input.id);
   const existingEntry = idx >= 0 ? models.models[idx]! : null;
   // On update, start from the existing entry and overlay only the fields the
@@ -179,6 +219,8 @@ export function upsertModel(profile: LappProfile, input: ModelInput): LappProfil
     ...(typeof input.maxOutputTokens === "number" ? { maxOutputTokens: input.maxOutputTokens } : {}),
     ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
     ...(input.protocol !== undefined ? { protocol: input.protocol } : {}),
+    ...(input.links !== undefined ? { links: input.links } : {}),
+    ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
   };
   if (idx >= 0) {
     models.models[idx] = entry;
@@ -200,6 +242,9 @@ export function removeModel(profile: LappProfile, target: ModelTarget): LappProf
     if (Array.isArray(m.aliases) && m.aliases.includes(target.model)) removedIds.add(m.id);
   }
   provider.models.models = provider.models.models.filter((m) => !removedIds.has(m.id));
+  // Any manage edit (including remove) clears the internal sync marker, so
+  // the writer does not treat a post-sync removal as a sync write.
+  delete (provider.models as { __lappUpdatedAtSource?: unknown }).__lappUpdatedAtSource;
   // If the removed model was referenced by any global default, clear it so the
   // next client call doesn't silently fall back to a non-existent model. A
   // global default can reference a model by id OR by alias, so check both —
@@ -224,12 +269,21 @@ export function removeModel(profile: LappProfile, target: ModelTarget): LappProf
   return next;
 }
 
-/** Set a global default model reference. */
-export function setDefaultModel(profile: LappProfile, target: ModelTarget): LappProfile {
+/** Set a global default model reference for any default slot. */
+export function setDefaultModelRef(
+  profile: LappProfile,
+  key: keyof GlobalConfig & `default${string}`,
+  target: ModelTarget,
+): LappProfile {
   const next = clone(profile);
   if (!next.global) next.global = { schemaVersion: "1.0" };
-  next.global.defaultModel = { providerId: target.providerId, model: target.model };
+  next.global[key] = { providerId: target.providerId, model: target.model };
   return next;
+}
+
+/** Set a global default model reference (chat slot). Backward-compatible wrapper. */
+export function setDefaultModel(profile: LappProfile, target: ModelTarget): LappProfile {
+  return setDefaultModelRef(profile, "defaultModel", target);
 }
 
 /** Predicate: is the protocol supported by the v1 client SDK? */
@@ -239,6 +293,18 @@ export function isSupportedProtocol(protocol: string): boolean {
     protocol === "openai-responses" ||
     protocol === "anthropic-messages"
   );
+}
+
+/**
+ * Return a copy of `profile` with `profile.global` guaranteed to be set
+ * (initialized to a minimal `{ schemaVersion: "1.0" }` if absent). The
+ * returned profile is a fresh object; the input is not mutated.
+ */
+export function ensureGlobal(profile: LappProfile): LappProfile {
+  if (profile.global) return profile;
+  const next = clone(profile);
+  next.global = { schemaVersion: "1.0" };
+  return next;
 }
 
 export { UnsupportedProtocolError } from "../types.js";

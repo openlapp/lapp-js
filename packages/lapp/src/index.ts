@@ -17,6 +17,8 @@ export * from "./plan.js";
 export * from "./write/atomic.js";
 export * from "./secret/index.js";
 export * from "./env-export/index.js";
+export * from "./connection.js";
+export * from "./sync/index.js";
 export * from "./client/index.js";
 
 export {

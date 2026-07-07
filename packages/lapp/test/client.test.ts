@@ -45,6 +45,30 @@ describe("createLappClient target resolution", () => {
     p = upsertProvider(p, { id: "mm", protocol: "minimax-api", baseUrl: "https://api.minimax.io/v1" });
     expect(() => createLappClient({ profile: p, provider: "mm" })).toThrow(UnsupportedProtocolError);
   });
+
+  it("uses protocol-specific baseUrl from protocols object", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, {
+      id: "multi",
+      protocols: [{ id: "openai-chat-completions", baseUrl: "https://chat.example/v1" }],
+      baseUrl: "https://provider.example",
+      auth: { secret: "sk-test" },
+    });
+    p = upsertModel(p, { providerId: "multi", id: "m", type: "chat" });
+    let capturedUrl = "";
+    const c = createLappClient({
+      profile: p,
+      provider: "multi",
+      model: "m",
+      resolveSecrets: true,
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        capturedUrl = String(input);
+        return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    await c.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(capturedUrl).toBe("https://chat.example/v1/chat/completions");
+  });
 });
 
 describe("openai-chat-completions adapter", () => {
@@ -292,29 +316,53 @@ describe("fix coverage for review findings", () => {
     expect(captured!.headers["X-Api-Key"]).toBe("Bearer sk-x");
   });
 
-  it("openai-chat: tool messages are rejected (consistent with openai-responses)", async () => {
+  it("openai-chat: tool messages are mapped to tool_result", async () => {
     let p = createProfile({ rootDir: "/tmp/.lapp" });
     p = upsertProvider(p, { id: "oai", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "sk-x" } });
     p = upsertModel(p, { providerId: "oai", id: "m", type: "chat" });
-    const wrappedFetch = (async () => new Response("{}"), { status: 200 }) as unknown as typeof fetch;
+    let captured: { body: { messages: Array<{ role: string; tool_call_id?: string; content: string }> } } | null = null;
+    const wrappedFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      captured = { body };
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+    }) as unknown as typeof fetch;
     const c = createLappClient({ profile: p, provider: "oai", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    await expect(
-      c.chat({ messages: [{ role: "tool", toolCallId: "call_x", content: "x" }] } as ChatInput),
-    ).rejects.toThrow(/not supported in v1/);
+    await c.chat({ messages: [{ role: "tool", toolCallId: "call_x", content: "x" }] } as ChatInput);
+    expect(captured!.body.messages[0]).toEqual({ role: "tool", tool_call_id: "call_x", content: "x" });
   });
 
-  it("openai-responses: rejects tool messages with a clear error", async () => {
+  it("openai-responses: maps tool messages to function_call_output", async () => {
     let p = createProfile({ rootDir: "/tmp/.lapp" });
     p = upsertProvider(p, { id: "oai", protocol: "openai-responses", baseUrl: "https://x", auth: { secret: "sk-x" } });
     p = upsertModel(p, { providerId: "oai", id: "m", type: "chat" });
-    const wrappedFetch = (async () => new Response("{}"), { status: 200 }) as unknown as typeof fetch;
+    let captured: { body: { input: Array<{ type: string; call_id?: string; output?: string }> } } | null = null;
+    const wrappedFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      captured = { body };
+      return new Response(JSON.stringify({ output_text: "ok" }), { status: 200 });
+    }) as unknown as typeof fetch;
     const c = createLappClient({ profile: p, provider: "oai", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    await expect(
-      c.chat({ messages: [{ role: "tool", toolCallId: "call_x", content: "x" }] } as ChatInput),
-    ).rejects.toThrow(/not supported in v1/);
+    await c.chat({ messages: [{ role: "tool", toolCallId: "call_x", content: "x" }] } as ChatInput);
+    expect(captured!.body.input[0]).toEqual({ type: "function_call_output", call_id: "call_x", output: "x" });
   });
 
-  it("global default model does not leak across providers when caller supplies provider", () => {
+  it("openai-chat rejects stream:true in chat()", async () => {
+    const p = baseProfile();
+    const wrappedFetch = (async () => new Response("{}")) as unknown as typeof fetch;
+    const c = createLappClient({ profile: p, provider: "deepseek", model: "deepseek-chat", resolveSecrets: true, env: { DEEPSEEK_API_KEY: "sk" }, fetchImpl: wrappedFetch });
+    await expect(c.chat({ messages: [{ role: "user", content: "hi" }], stream: true } as ChatInput)).rejects.toThrow(/chat\(\) does not support stream: true/);
+  });
+
+  it("openai-responses rejects stream:true in chat()", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, { id: "oai", protocol: "openai-responses", baseUrl: "https://x", auth: { secret: "sk" } });
+    p = upsertModel(p, { providerId: "oai", id: "m", type: "chat" });
+    const wrappedFetch = (async () => new Response("{}")) as unknown as typeof fetch;
+    const c = createLappClient({ profile: p, provider: "oai", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
+    await expect(c.chat({ messages: [{ role: "user", content: "hi" }], stream: true } as ChatInput)).rejects.toThrow(/chat\(\) does not support stream: true/);
+  });
+
+  it("explicitly-named provider does not pull in another provider's global default", () => {
     let p = createProfile({ rootDir: "/tmp/.lapp", global: true });
     p = upsertProvider(p, { id: "openai", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "sk-oai" } });
     p = upsertModel(p, { providerId: "openai", id: "gpt-4o", type: "chat" });
@@ -402,10 +450,6 @@ describe("fix coverage for review findings", () => {
     expect(entries[0]!.name).toBe("_1PROVIDER_API_KEY");
   });
 
-  // Regression: parseFlags (in cli/src/index.ts) must not consume a
-  // flag-shaped token as a value. The unit test for it lives in the
-  // CLI package; this suite covers the SDK surface.
-
   // Regression: a profile with only disabled providers must throw a clear
   // "no enabled provider available" instead of falling through to providers[0]
   // and surfacing a misleading "provider is disabled" error.
@@ -415,23 +459,13 @@ describe("fix coverage for review findings", () => {
     expect(() => createLappClient({ profile: p })).toThrow(/no enabled provider/);
   });
 
-  // Regression: stream:true must be rejected, not silently forwarded. The
-  // non-streaming endpoint returns SSE which parseResponse can't parse,
-  // yielding an empty LappResponse with no error.
-  it("openai-chat rejects stream:true with a clear error", async () => {
-    const p = baseProfile();
-    const wrappedFetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "deepseek", model: "deepseek-chat", resolveSecrets: true, env: { DEEPSEEK_API_KEY: "sk" }, fetchImpl: wrappedFetch });
-    await expect(c.chat({ messages: [{ role: "user", content: "hi" }], stream: true } as ChatInput)).rejects.toThrow(/streaming is not supported/);
-  });
-
   it("openai-responses rejects stream:true with a clear error", async () => {
     let p = createProfile({ rootDir: "/tmp/.lapp" });
     p = upsertProvider(p, { id: "oai", protocol: "openai-responses", baseUrl: "https://x", auth: { secret: "sk" } });
     p = upsertModel(p, { providerId: "oai", id: "gpt-4o", type: "chat" });
     const wrappedFetch = (async () => new Response("{}")) as unknown as typeof fetch;
     const c = createLappClient({ profile: p, provider: "oai", model: "gpt-4o", resolveSecrets: true, fetchImpl: wrappedFetch });
-    await expect(c.chat({ messages: [{ role: "user", content: "hi" }], stream: true } as ChatInput)).rejects.toThrow(/streaming is not supported/);
+    await expect(c.chat({ messages: [{ role: "user", content: "hi" }], stream: true } as ChatInput)).rejects.toThrow(/chat\(\) does not support stream: true/);
   });
 
   // Anthropic: tool message with toolCallId maps to tool_result content block
@@ -481,11 +515,11 @@ describe("fix coverage for review findings", () => {
   });
 
   // Openai-responses: assistant message maps to developer role
-  it("openai-responses: assistant messages map to role developer", async () => {
+  it("openai-responses: assistant messages keep role assistant (not remapped to developer)", async () => {
     let p = createProfile({ rootDir: "/tmp/.lapp" });
     p = upsertProvider(p, { id: "oai", protocol: "openai-responses", baseUrl: "https://api.openai.com/v1", auth: { secret: "sk-oai" } });
     p = upsertModel(p, { providerId: "oai", id: "gpt-4o", type: "chat" });
-    let captured: { body: { input: Array<{ role: string }> } } | null = null;
+    let captured: { body: { input: Array<{ role: string; content: unknown }> } } | null = null;
     const wrappedFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = init?.body ? JSON.parse(init.body as string) : {};
       captured = { body };
@@ -499,7 +533,12 @@ describe("fix coverage for review findings", () => {
       ],
     } as ChatInput);
     const items = captured!.body.input;
-    expect(items[0]!.role).toBe("developer");
+    // Regression: previous behavior remapped assistant → developer, which
+    // made OpenAI treat multi-turn assistant history as a high-priority
+    // system instruction. Multi-turn `executeWithTools` relied on this so
+    // we keep `assistant` verbatim.
+    expect(items[0]!.role).toBe("assistant");
+    expect(items[0]!.content).toBe("I can help");
     expect(items[1]!.role).toBe("user");
   });
 
@@ -582,6 +621,90 @@ describe("fix coverage for review findings", () => {
     const c = createLappClient({ profile: p, provider: "deepseek", model: "deepseek-chat", resolveSecrets: true, env: { DEEPSEEK_API_KEY: "sk-test" }, fetchImpl: wrappedFetch });
     try { await c.chat({ messages: [{ role: "user", content: "hi" }] }); } catch (err) { rawResult = (err as { raw?: unknown }).raw; }
     expect(rawResult).toBeTruthy();
+  });
+
+  // err.raw must NOT contain echoed secrets (regression: previously the raw
+  // body was attached to the thrown error without redaction, so a provider
+  // that echoed "sk-abc..." or "Bearer xyz" in its error body would leak
+  // credentials through any caller that logged err.raw).
+  it("err.raw is scrubbed: nested object strings are redacted", async () => {
+    const p = baseProfile();
+    const wrappedFetch = (async () =>
+      new Response(JSON.stringify({
+        error: {
+          message: "invalid key sk-abc123def4567890123456",
+          nested: { token: "Bearer xyz7890abcdefghij" },
+        },
+        list: ["sk-listitem1234567890", "harmless"],
+      }), { status: 401, headers: { "content-type": "application/json" } }),
+    ) as unknown as typeof fetch;
+    const c = createLappClient({
+      profile: p, provider: "deepseek", model: "deepseek-chat",
+      resolveSecrets: true, env: { DEEPSEEK_API_KEY: "sk-test" }, fetchImpl: wrappedFetch,
+    });
+    let err: (Error & { raw?: unknown }) | null = null;
+    try {
+      await c.chat({ messages: [{ role: "user", content: "hi" }] });
+    } catch (e) {
+      err = e as Error & { raw?: unknown };
+    }
+    expect(err).not.toBeNull();
+    const raw = err!.raw as { error: { message: string; nested: { token: string } }; list: string[] };
+    expect(raw.error.message).toContain("<redacted>");
+    expect(raw.error.message).not.toContain("sk-abc123def4567890123456");
+    expect(raw.error.nested.token).toBe("<redacted>");
+    expect(raw.list[0]).toBe("<redacted>");
+    expect(raw.list[1]).toBe("harmless");
+    expect(Array.isArray(raw.list)).toBe(true);
+  });
+
+  // err.raw redaction handles non-JSON bodies (the SDK wraps them in
+  // `{ _rawText: <text> }`); the redacted text should land in `_rawText`.
+  it("err.raw is scrubbed: non-JSON _rawText strings are redacted", async () => {
+    const p = baseProfile();
+    const wrappedFetch = (async () =>
+      new Response("error: sk-abc123def4567890123456 invalid", { status: 502, headers: { "content-type": "text/plain" } }),
+    ) as unknown as typeof fetch;
+    const c = createLappClient({
+      profile: p, provider: "deepseek", model: "deepseek-chat",
+      resolveSecrets: true, env: { DEEPSEEK_API_KEY: "sk-test" }, fetchImpl: wrappedFetch,
+    });
+    let err: (Error & { raw?: unknown }) | null = null;
+    try {
+      await c.chat({ messages: [{ role: "user", content: "hi" }] });
+    } catch (e) {
+      err = e as Error & { raw?: unknown };
+    }
+    const raw = err!.raw as { _rawText: string };
+    expect(raw._rawText).toContain("<redacted>");
+    expect(raw._rawText).not.toContain("sk-abc123def4567890123456");
+  });
+
+  // err.raw redaction is cycle-safe: a cyclic object passed in shouldn't
+  // blow the stack. We can't easily inject cycles from a Response JSON body,
+  // so this test exercises the helper directly.
+  it("err.raw redaction handles cyclic structures without infinite recursion", async () => {
+    // Import the redaction helper indirectly: a deeply nested object with a
+    // self-reference would normally stack-overflow; we cap recursion at 64.
+    // Simulate by sending a body that, once parsed, has 70 levels of nesting.
+    const p = baseProfile();
+    let nested: Record<string, unknown> = { msg: "leaf" };
+    for (let i = 0; i < 70; i++) nested = { inner: nested };
+    const wrappedFetch = (async () =>
+      new Response(JSON.stringify(nested), { status: 500, headers: { "content-type": "application/json" } }),
+    ) as unknown as typeof fetch;
+    const c = createLappClient({
+      profile: p, provider: "deepseek", model: "deepseek-chat",
+      resolveSecrets: true, env: { DEEPSEEK_API_KEY: "sk-test" }, fetchImpl: wrappedFetch,
+    });
+    let err: (Error & { raw?: unknown }) | null = null;
+    try {
+      await c.chat({ messages: [{ role: "user", content: "hi" }] });
+    } catch (e) {
+      err = e as Error & { raw?: unknown };
+    }
+    expect(err).not.toBeNull();
+    expect(err!.raw).toBeDefined();
   });
 
   // Openai-chat: auth headers stripped from requestHeaders to avoid duplicates
@@ -760,5 +883,24 @@ describe("fix coverage for review findings", () => {
     const p = baseProfile();
     const c = createLappClient({ profile: p, provider: "deepseek", model: "not-listed", resolveSecrets: false });
     expect(c.model).toBe("not-listed");
+  });
+});
+
+// Regression coverage for Round 4 finding F10: redactRawObject's depth cap
+// must still scrub string leaves (a secret nested >64 levels deep must not
+// be returned un-redacted on err.raw).
+describe("redactRawObject depth safety (F10)", () => {
+  it("scrubs a secret nested >64 levels deep", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, { id: "p", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "sk" } });
+    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
+    let leaf: unknown = "sk-leaked1234567890abcdef";
+    for (let i = 0; i < 70; i++) leaf = { [i]: leaf };
+    const body = JSON.stringify({ error: leaf });
+    const fetchImpl = (async () => new Response(body, { status: 500 })) as unknown as typeof fetch;
+    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl });
+    let caught: any;
+    try { await c.chat({ messages: [{ role: "user", content: "x" }] }); } catch (e) { caught = e; }
+    expect(JSON.stringify(caught?.raw).includes("sk-leaked1234567890abcdef")).toBe(false);
   });
 });

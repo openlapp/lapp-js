@@ -18,16 +18,21 @@ import {
   upsertModel,
   removeModel,
   setDefaultModel,
+  setDefaultModelRef,
   planChanges,
   writeProfileAtomic,
   exportEnv,
   createLappClient,
   resolveLappRoot,
   UnsupportedProtocolError,
+  syncProviderModels,
+  applySyncedModels,
+  replaceProviderModels,
+  ensureGlobal,
   type LappProfile,
 } from "@openlapp/lapp";
 
-const VERSION = "lapp 0.1.0";
+const VERSION = "lapp 1.0.0";
 
 function usage(): string {
   return `Usage:
@@ -38,10 +43,11 @@ function usage(): string {
   lapp provider remove [path] --id <id>
   lapp model add|set [path] --provider <id> --id <id> [--alias <a>...] [--type <t>]
   lapp model remove [path] --provider <id> --id <id>
-  lapp default set [path] --provider <id> --model <id>
+  lapp models sync [path] --provider <id> [--apply] [--remove-stale]
+  lapp default set [path] --provider <id> --model <id> [--kind chat|embedding|image|tts|video]
   lapp env [path] --format bash|zsh|fish|powershell|cmd [--resolve] [--allow-plaintext]
   lapp ping [provider[/model]] [path]
-  lapp chat [provider[/model]] <message> [path]
+  lapp chat [provider[/model]] <message> [path] [--provider <id> --model <id>] [--stream] [--tool <name:description:schema>]
   lapp doctor [path]
 
 Global flags: --dry-run, --yes, --reveal-secrets, --help, -h, --version, -v
@@ -68,7 +74,45 @@ function parseFlags(argv: string[]): ParsedArgs {
     if (a === "--allow-plaintext") { flags["allow-plaintext"] = true; i++; continue; }
     if (a === "--") { args.push(...argv.slice(i + 1)); break; }
     if (a.startsWith("--")) {
-      const key = a.slice(2);
+      // Support `--key=value` (e.g. `--provider=openai`). Split at the
+      // FIRST `=` so a value like `a=b` survives intact. The
+      // `--key value` form is handled below as a fallback.
+      let key: string;
+      let inlineValue: string | undefined;
+      const eq = a.indexOf("=");
+      if (eq !== -1) {
+        key = a.slice(2, eq);
+        inlineValue = a.slice(eq + 1);
+      } else {
+        key = a.slice(2);
+      }
+      if (key === "") {
+        args.push(a);
+        i++;
+        continue;
+      }
+      if (inlineValue !== undefined) {
+        // Treat `--key=` (empty value) as a boolean toggle, matching the
+        // existing semantics where a flag with no value defaults to `true`.
+        if (inlineValue === "") {
+          flags[key] = true;
+        } else {
+          if (key in flags) {
+            const existing = flags[key];
+            if (typeof existing === "boolean") {
+              flags[key] = [inlineValue];
+            } else if (Array.isArray(existing)) {
+              flags[key] = [...existing, inlineValue];
+            } else {
+              flags[key] = [existing as string, inlineValue];
+            }
+          } else {
+            flags[key] = inlineValue;
+          }
+        }
+        i++;
+        continue;
+      }
       const next = argv[i + 1];
       // Only treat the next token as a flag's value if it doesn't itself
       // look like a flag. Without this guard, `lapp provider add --id
@@ -113,6 +157,45 @@ function flagArray(flags: Record<string, unknown>, key: string): string[] {
   const v = flags[key];
   if (v === undefined || typeof v === "boolean") return [];
   return Array.isArray(v) ? v : [v as string];
+}
+
+/**
+ * Parse a `--tool` value: `name[:description[:schemaJson]]`. The schema is
+ * passed through verbatim to the adapter; defaults to `{ "type": "object" }`
+ * when missing or unparseable. The CLI uses this for smoke-testing tool
+ * support, so it errs on the side of being permissive.
+ */
+function parseToolSpec(spec: string): { name: string; description?: string; parameters: Record<string, unknown> } {
+  // name is required and must not contain ':'. The description / schema may
+  // contain ':', so split at most twice — indexOf rather than split(':')
+  // to preserve colons inside the JSON schema.
+  const firstColon = spec.indexOf(":");
+  if (firstColon === -1) {
+    return { name: spec, parameters: { type: "object", properties: {} } };
+  }
+  const name = spec.slice(0, firstColon);
+  const rest = spec.slice(firstColon + 1);
+  const secondColon = rest.indexOf(":");
+  let description: string | undefined;
+  let schemaJson: string | undefined;
+  if (secondColon === -1) {
+    description = rest;
+  } else {
+    description = rest.slice(0, secondColon);
+    schemaJson = rest.slice(secondColon + 1);
+  }
+  let parameters: Record<string, unknown> = { type: "object", properties: {} };
+  if (schemaJson && schemaJson.length > 0) {
+    try {
+      const parsed = JSON.parse(schemaJson) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        parameters = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Keep the default — a bad schema shouldn't crash the chat command.
+    }
+  }
+  return { name, ...(description ? { description } : {}), parameters };
 }
 
 // Cover common API-key prefixes plus generic long base64-ish strings that
@@ -184,7 +267,9 @@ async function cmdInspect(args: string[], flags: Record<string, unknown>): Promi
   console.log(`root: ${summary.rootDir}`);
   console.log(`providers (${summary.providers.length}):`);
   for (const p of summary.providers) {
-    console.log(`  - ${p.id}${p.name ? ` (${p.name})` : ""} [${p.protocol}]${p.enabled ? "" : " (disabled)"}${p.coreProtocol ? "" : " (non-core)"}`);
+    const protocolEntries = p.protocols ?? [{ id: p.protocol }];
+    const protocols = protocolEntries.length > 1 ? protocolEntries.map((x) => x.id).join(", ") : p.protocol;
+    console.log(`  - ${p.id}${p.name ? ` (${p.name})` : ""} [${protocols}]${p.enabled ? "" : " (disabled)"}${p.coreProtocol ? "" : " (non-core)"}`);
     console.log(`    baseUrl: ${p.baseUrl}`);
     console.log(`    secret: ${p.secret.redacted} (scheme=${p.secret.scheme}, resolvable=${p.secret.resolvable}${p.secret.plaintextWarning ? ", plaintext-warning" : ""})`);
     if (p.models.length) {
@@ -195,8 +280,20 @@ async function cmdInspect(args: string[], flags: Record<string, unknown>): Promi
       }
     }
   }
-  if (summary.global?.defaultModel) {
-    console.log(`global.defaultModel: ${summary.global.defaultModel.providerId}/${summary.global.defaultModel.model}`);
+  if (summary.global) {
+    const defaultKeys = [
+      ["defaultModel", "chat"],
+      ["defaultEmbeddingModel", "embedding"],
+      ["defaultImageModel", "image"],
+      ["defaultTextToSpeechModel", "tts"],
+      ["defaultVideoModel", "video"],
+    ] as const;
+    for (const [key, label] of defaultKeys) {
+      const ref = summary.global[key];
+      if (ref) {
+        console.log(`global.${label}: ${ref.providerId}/${ref.model}`);
+      }
+    }
   }
   printDiagnostics(profile);
   return 0;
@@ -235,7 +332,7 @@ async function cmdInit(args: string[], flags: Record<string, unknown>): Promise<
     id: providerId,
     protocol,
     baseUrl,
-    ...(secret ? { auth: { secret } } : {}),
+    ...(flags["no-auth"] ? { auth: { type: "none" } } : secret ? { auth: { secret } } : {}),
   });
   if (modelId) {
     profile = upsertModel(profile, { providerId, id: modelId, type: "chat" });
@@ -264,7 +361,25 @@ async function cmdProvider(args: string[], flags: Record<string, unknown>): Prom
       console.error("provider add requires --id, --protocol, --base-url");
       return 2;
     }
-    const next = upsertProvider(profile, { id, protocol, baseUrl, ...(secret ? { auth: { secret } } : {}) });
+    const auth = flags["no-auth"]
+      ? { type: "none" as const }
+      : secret
+        ? { secret }
+        : undefined;
+    // Honor --enabled / --disabled so a user can flip a provider's state
+    // from the CLI (the SDK's upsertProvider overlays the field; a CLI
+    // user who omits both flags leaves the existing state untouched).
+    const enabledFlag = flags["enabled"];
+    const disabledFlag = flags["disabled"];
+    const enabled =
+      enabledFlag === true ? true : disabledFlag === true ? false : undefined;
+    const next = upsertProvider(profile, {
+      id,
+      protocol,
+      baseUrl,
+      ...(auth ? { auth } : {}),
+      ...(enabled !== undefined ? { enabled } : {}),
+    });
     return await maybeWrite(next, flags);
   }
   if (sub === "remove") {
@@ -289,11 +404,19 @@ async function cmdModel(args: string[], flags: Record<string, unknown>): Promise
     const providerId = flagString(flags, "provider");
     const id = flagString(flags, "id");
     if (!providerId || !id) { console.error("model add requires --provider, --id"); return 2; }
+    // For `add`: default aliases to [id] so the model is addressable by id.
+    // For `set`: omit aliases when --alias is not supplied so the overlay-
+    // only invariant (CLAUDE.md row 7) holds — upsertModel preserves the
+    // existing aliases instead of silently wiping them.
+    const aliasArray = flagArray(flags, "alias");
+    const isUpdate = sub === "set" && (flags["alias"] === undefined || aliasArray.length === 0);
     const next = upsertModel(profile, {
       providerId,
       id,
-      aliases: flagArray(flags, "alias").length ? flagArray(flags, "alias") : [id],
+      ...(isUpdate ? {} : { aliases: aliasArray.length ? aliasArray : [id] }),
       type: flagString(flags, "type") ?? "chat",
+      links: typeof flags.links === "object" && flags.links !== null ? (flags.links as Record<string, string>) : undefined,
+      metadata: typeof flags.metadata === "object" && flags.metadata !== null ? (flags.metadata as Record<string, unknown>) : undefined,
     });
     return await maybeWrite(next, flags);
   }
@@ -308,6 +431,74 @@ async function cmdModel(args: string[], flags: Record<string, unknown>): Promise
   return 2;
 }
 
+async function cmdModels(args: string[], flags: Record<string, unknown>): Promise<number> {
+  const sub = args[0];
+  const root = args.find(looksLikePath) ? resolveLappRoot(args.find(looksLikePath)!) : resolveLappRoot();
+
+  if (sub === "list") {
+    const profile = loadProfile({ path: root });
+    for (const p of profile.providers) {
+      console.log(`${p.config.id}: ${p.models?.models.map((m) => m.id).join(", ") ?? "(no models)"}`);
+    }
+    return 0;
+  }
+
+  if (sub === "sync") {
+    if (!exists(root)) {
+      console.error(`profile does not exist: ${root}`);
+      return 1;
+    }
+    const providerId = flagString(flags, "provider");
+    if (!providerId) { console.error("models sync requires --provider"); return 2; }
+    const profile = loadProfile({ path: root });
+    // `lapp models sync` is the primary use case for local/self-hosted
+    // providers (Ollama etc.) which often carry no auth secret. Pass
+    // allowUnauthenticated so an unset secret falls through with empty
+    // Authorization instead of throwing "auth.secret is missing or empty".
+    const result = await syncProviderModels(profile, providerId, {
+      resolveSecrets: true,
+      allowUnauthenticated: true,
+    });
+    console.log(`synced models for ${providerId}:`);
+    console.log(`  added: ${result.added.length}`);
+    console.log(`  updated: ${result.updated.length}`);
+    console.log(`  removed: ${result.removed.length}`);
+    if (flags["dry-run"] || !flags.apply) {
+      if (result.added.length) {
+        console.log("  added ids: " + result.added.map((m) => m.id).join(", "));
+      }
+      if (result.updated.length) {
+        console.log("  updated ids: " + result.updated.map((m) => m.id).join(", "));
+      }
+      if (result.removed.length) {
+        console.log("  removed ids: " + result.removed.map((m) => m.id).join(", "));
+      }
+      if (!flags.apply) {
+        console.log("pass --apply --yes to write changes.");
+      }
+      return 0;
+    }
+    const provider = profile.providers.find((p) => p.config.id === providerId);
+    if (!provider) {
+      console.error(`provider not found in profile: ${providerId}`);
+      return 1;
+    }
+    const removeStale = Boolean(flags["remove-stale"]);
+    const merged = applySyncedModels(provider.models, result);
+    // If --remove-stale is set, also drop provider-sourced entries that the
+    // provider no longer reports. Manual entries (source="manual") are kept
+    // even when not in the fetched list, so a curated model survives a sync.
+    const finalModels: typeof merged = removeStale
+      ? { ...merged, models: merged.models.filter((m) => m.source !== "provider" || result.models.some((f) => f.id === m.id)) }
+      : merged;
+    const next = replaceProviderModels(profile, providerId, finalModels.models.length > 0 ? finalModels : null);
+    return await maybeWrite(next, flags);
+  }
+
+  console.error(`unknown models subcommand: ${sub ?? "(none)"}`);
+  return 2;
+}
+
 async function cmdDefault(args: string[], flags: Record<string, unknown>): Promise<number> {
   const sub = args[0];
   const root = args.find(looksLikePath) ? resolveLappRoot(args.find(looksLikePath)!) : resolveLappRoot();
@@ -318,17 +509,31 @@ async function cmdDefault(args: string[], flags: Record<string, unknown>): Promi
     console.error(`profile does not exist: ${root}`);
     return 1;
   }
-  const profile = loadOrCreate(root);
-  if (!profile.global) profile.global = { schemaVersion: "1.0" };
+  const profile = ensureGlobal(loadOrCreate(root));
   if (sub === "set") {
     const providerId = flagString(flags, "provider");
     const model = flagString(flags, "model");
     if (!providerId || !model) { console.error("default set requires --provider, --model"); return 2; }
-    const next = setDefaultModel(profile, { providerId, model });
+    const kind = flagString(flags, "kind") ?? "chat";
+    const key = kindToDefaultKey(kind);
+    if (!key) { console.error(`invalid --kind: ${kind}`); return 2; }
+    const next = setDefaultModelRef(profile, key, { providerId, model });
     return await maybeWrite(next, flags);
   }
   console.error(`unknown default subcommand: ${sub ?? "(none)"}`);
   return 2;
+}
+
+/** Map CLI --kind value to the corresponding GlobalConfig key. */
+function kindToDefaultKey(kind: string): "defaultModel" | "defaultEmbeddingModel" | "defaultImageModel" | "defaultTextToSpeechModel" | "defaultVideoModel" | undefined {
+  switch (kind) {
+    case "chat": return "defaultModel";
+    case "embedding": return "defaultEmbeddingModel";
+    case "image": return "defaultImageModel";
+    case "tts": return "defaultTextToSpeechModel";
+    case "video": return "defaultVideoModel";
+    default: return undefined;
+  }
 }
 
 async function cmdEnv(args: string[], flags: Record<string, unknown>): Promise<number> {
@@ -374,7 +579,9 @@ async function cmdChat(args: string[], flags: Record<string, unknown>): Promise<
     return 2;
   }
   // Target resolution priority:
-  //   1. --provider / --model flags (explicit, always preferred)
+  //   1. --provider / --model flags (explicit, always preferred; both
+  //      required when using flags so we never send a model to the wrong
+  //      provider).
   //   2. First positional *only if* it contains a "/" AND has no spaces AND
   //      doesn't look like a filesystem path (a target token is a single
   //      word with one slash like "openai/gpt-4o"; a message like
@@ -385,7 +592,13 @@ async function cmdChat(args: string[], flags: Record<string, unknown>): Promise<
   // misrouting messages that merely contain a slash.
   let targetToken: string | undefined;
   let message: string;
-  if (flagString(flags, "provider") || flagString(flags, "model")) {
+  const flagProvider = flagString(flags, "provider");
+  const flagModel = flagString(flags, "model");
+  if (flagProvider || flagModel) {
+    if (!flagProvider || !flagModel) {
+      console.error("chat --provider and --model must be supplied together");
+      return 2;
+    }
     message = positional.join(" ");
   } else {
     const first = positional[0];
@@ -408,6 +621,53 @@ async function cmdChat(args: string[], flags: Record<string, unknown>): Promise<
     model: flagString(flags, "model") ?? target.model,
     resolveSecrets: true,
   });
+
+  // --tool <name>[:description[:schema-json]] — register a stub tool that the
+  // model can call. The CLI doesn't execute anything; the tool result is the
+  // string "(stub)" so the loop terminates. Useful for verifying that a
+  // provider+model honors tool_choice=auto without writing handler code.
+  const toolSpecs = flagArray(flags, "tool");
+  if (toolSpecs.length > 0) {
+    const tools = toolSpecs.map((spec) => parseToolSpec(spec));
+    const handlers: Record<string, (args: Record<string, unknown>) => string> = {};
+    for (const t of tools) handlers[t.name] = () => "(stub)";
+    const out = await client.executeWithTools(
+      { messages: [{ role: "user", content: message }] },
+      tools,
+      handlers,
+    );
+    for (const m of out.messages) {
+      if (m.role === "tool") {
+        console.error(`\n[tool_result ${m.name ?? ""}(${m.toolCallId ?? ""}): ${m.content}]`);
+      }
+    }
+    console.log(out.text);
+    return 0;
+  }
+
+  if (flags.stream) {
+    const stream = client.stream({ messages: [{ role: "user", content: message }] });
+    for await (const ev of stream) {
+      if (ev.kind === "delta") {
+        process.stdout.write(ev.text);
+      } else if (ev.kind === "tool-call") {
+        console.error(`\n[tool_call: ${ev.name}(${ev.arguments})]`);
+      } else if (ev.kind === "usage") {
+        const usage = [ev.inputTokens, ev.outputTokens, ev.totalTokens]
+          .map((n, i) => n !== undefined ? ["in", "out", "total"][i] + "=" + n : "")
+          .filter(Boolean)
+          .join(" ");
+        if (usage) console.error(`\nusage: ${usage}`);
+      } else if (ev.kind === "finish") {
+        console.error(`\nfinish: ${ev.reason}`);
+      } else if (ev.kind === "error") {
+        console.error(`\nstream error: ${redactAll(ev.message)}`);
+      }
+    }
+    process.stdout.write("\n");
+    return 0;
+  }
+
   const resp = await client.chat({ messages: [{ role: "user", content: message }] });
   // Print the assistant's reply verbatim. redactAll is for *errors* (which
   // can echo the request and the secret); applying it to the model's
@@ -440,7 +700,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
     } catch (err) {
       if (err instanceof UnsupportedProtocolError) {
         unsupported++;
-        console.log(`  unsupported protocol: ${p.config.id} -> ${p.config.protocol}`);
+        console.log(`  unsupported protocol: ${p.config.id} -> ${err.protocol}`);
       } else {
         // Other errors (TargetResolutionError for a provider with no
         // enabled model and no global default, etc.) are real
@@ -483,7 +743,7 @@ async function maybeWrite(profile: LappProfile, flags: Record<string, unknown>):
 }
 
 type Command =
-  | "validate" | "inspect" | "init" | "provider" | "model" | "default"
+  | "validate" | "inspect" | "init" | "provider" | "model" | "models" | "default"
   | "env" | "ping" | "chat" | "doctor" | "help" | "version";
 
 async function main(): Promise<number> {
@@ -499,6 +759,7 @@ async function main(): Promise<number> {
     case "init": return await cmdInit(args, flags);
     case "provider": return await cmdProvider(args, flags);
     case "model": return await cmdModel(args, flags);
+    case "models": return await cmdModels(args, flags);
     case "default": return await cmdDefault(args, flags);
     case "env": return await cmdEnv(args, flags);
     case "ping": return await cmdPing(args);
@@ -530,6 +791,7 @@ export {
   SECRET_PATTERNS,
   looksLikePath,
   parseTarget,
+  parseToolSpec,
   exists,
   printDiagnostics,
   loadOrCreate,
@@ -539,6 +801,7 @@ export {
   cmdInit,
   cmdProvider,
   cmdModel,
+  cmdModels,
   cmdDefault,
   cmdEnv,
   cmdPing,

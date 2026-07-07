@@ -20,6 +20,7 @@ import {
   SECRET_PATTERNS,
   looksLikePath,
   parseTarget,
+  parseToolSpec,
   printDiagnostics,
   maybeWrite,
   cmdValidate,
@@ -136,6 +137,24 @@ describe("parseFlags", () => {
     expect(r.args).toEqual([]);
   });
 
+  it("parses --key=value form", () => {
+    const r = parseFlags(["--provider=openai", "--model=gpt-4o", "--format=bash"]);
+    expect(r.flags.provider).toBe("openai");
+    expect(r.flags.model).toBe("gpt-4o");
+    expect(r.flags.format).toBe("bash");
+    expect(r.args).toEqual([]);
+  });
+
+  it("--key=value with = inside the value is preserved", () => {
+    const r = parseFlags(["--alias=name=with=equals"]);
+    expect(r.flags.alias).toBe("name=with=equals");
+  });
+
+  it("--key= (empty value) is treated as a boolean toggle", () => {
+    const r = parseFlags(["--yes="]);
+    expect(r.flags.yes).toBe(true);
+  });
+
   it("collects positional args", () => {
     const r = parseFlags(["validate", "/tmp/my.lapp"]);
     expect(r.args).toEqual(["validate", "/tmp/my.lapp"]);
@@ -149,10 +168,10 @@ describe("parseFlags", () => {
     expect(r.flags.model).toBe("gpt-4o");
   });
 
-  it("--flag=value is NOT supported (--prefix consumes next token)", () => {
-    // The parser treats "--provider=openai" as a bool flag named "provider=openai"
+  it("--flag=value form parses key and value (no longer treated as bool)", () => {
     const r = parseFlags(["--provider=openai"]);
-    expect(r.flags["provider=openai"]).toBe(true);
+    expect(r.flags.provider).toBe("openai");
+    expect(r.flags["provider=openai"]).toBeUndefined();
   });
 
   it("repeated flag becomes array", () => {
@@ -666,6 +685,22 @@ describe("cmdModel", () => {
     const raw = fs.readFileSync(path.join(root, "providers", "ds", "models.json"), "utf8");
     expect(raw).toContain("slow");
   });
+
+  // Round 4 regression: `lapp model set --type X` must NOT wipe prior aliases
+  // when --alias is omitted. The CLI's previous `[id]` default violated the
+  // overlay-only invariant (CLAUDE.md row 7).
+  it("set without --alias preserves prior aliases", async () => {
+    await captureOutputAsync(() =>
+      cmdModel(["add", root], { provider: "ds", id: "deepseek-chat", alias: ["fast", "slow"], type: "chat", yes: true }),
+    );
+    await captureOutputAsync(() =>
+      cmdModel(["set", root], { provider: "ds", id: "deepseek-chat", type: "embedding", yes: true }),
+    );
+    const raw = fs.readFileSync(path.join(root, "providers", "ds", "models.json"), "utf8");
+    expect(raw).toContain("fast");
+    expect(raw).toContain("slow");
+    expect(raw).toContain("embedding");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -702,10 +737,22 @@ describe("cmdDefault", () => {
     expect(errLines.some((l) => l.includes("requires"))).toBe(true);
   });
 
-  it("unknown subcommand returns 2", async () => {
-    const { errLines, code } = await captureOutputAsync(() => cmdDefault(["get", root], {}));
+  it("sets default model with --kind", async () => {
+    const { code } = await captureOutputAsync(() =>
+      cmdDefault(["set", root], { provider: "ds", model: "deepseek-chat", kind: "embedding", yes: true }),
+    );
+    expect(code).toBe(0);
+    const raw = JSON.parse(fs.readFileSync(path.join(root, "global.json"), "utf8"));
+    expect(raw.defaultEmbeddingModel).toEqual({ providerId: "ds", model: "deepseek-chat" });
+    expect(raw.defaultModel).toBeUndefined();
+  });
+
+  it("rejects invalid --kind", async () => {
+    const { errLines, code } = await captureOutputAsync(() =>
+      cmdDefault(["set", root], { provider: "ds", model: "deepseek-chat", kind: "invalid" }),
+    );
     expect(code).toBe(2);
-    expect(errLines.some((l) => l.includes("unknown"))).toBe(true);
+    expect(errLines.some((l) => l.includes("invalid"))).toBe(true);
   });
 });
 
@@ -841,5 +888,105 @@ describe("maybeWrite", () => {
     expect(code).toBe(0);
     expect(lines.some((l) => l.includes("planned changes"))).toBe(true);
     expect(lines.some((l) => l.includes("dry-run"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseToolSpec
+// ---------------------------------------------------------------------------
+
+describe("parseToolSpec", () => {
+  it("parses bare name with default empty object schema", () => {
+    expect(parseToolSpec("echo")).toEqual({ name: "echo", parameters: { type: "object", properties: {} } });
+  });
+
+  it("parses name:description", () => {
+    expect(parseToolSpec("echo:echoes input")).toEqual({
+      name: "echo",
+      description: "echoes input",
+      parameters: { type: "object", properties: {} },
+    });
+  });
+
+  it("parses name:description:schemaJson and preserves the schema verbatim", () => {
+    const schema = '{"type":"object","properties":{"x":{"type":"string"}}}';
+    expect(parseToolSpec(`echo:echoes:${schema}`)).toEqual({
+      name: "echo",
+      description: "echoes",
+      parameters: { type: "object", properties: { x: { type: "string" } } },
+    });
+  });
+
+  it("falls back to default schema when the JSON is malformed", () => {
+    expect(parseToolSpec("echo:desc:{not-json").parameters).toEqual({ type: "object", properties: {} });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --no-auth flow
+// ---------------------------------------------------------------------------
+
+describe("cmdInit --no-auth", () => {
+  let root: string;
+  beforeEach(() => { root = tmpLappRoot(); });
+
+  it("writes auth: { type: 'none' } when --no-auth is set", async () => {
+    const { code } = await captureOutputAsync(() =>
+      cmdInit([root], {
+        provider: "ollama",
+        protocol: "openai-chat-completions",
+        "base-url": "http://localhost:11434/v1",
+        "no-auth": true,
+        yes: true,
+      }),
+    );
+    expect(code).toBe(0);
+    const p = loadProfile({ path: root, skipValidate: true });
+    const cfg = p.providers[0]!.config;
+    expect(cfg.auth?.type).toBe("none");
+    expect(cfg.auth?.secret).toBeUndefined();
+  });
+});
+
+describe("cmdProvider --no-auth", () => {
+  let root: string;
+  beforeEach(() => { root = tmpLappRoot(); });
+
+  it("provider add --no-auth sets auth: { type: 'none' }", async () => {
+    const { code } = await captureOutputAsync(() =>
+      cmdProvider(["add", root], {
+        id: "ollama",
+        protocol: "openai-chat-completions",
+        "base-url": "http://localhost:11434/v1",
+        "no-auth": true,
+        yes: true,
+      }),
+    );
+    expect(code).toBe(0);
+    const p = loadProfile({ path: root, skipValidate: true });
+    expect(p.providers[0]!.config.auth?.type).toBe("none");
+  });
+});
+
+// Round 4 regression: `lapp provider set --enabled false` must be honored
+// (previously silently ignored).
+describe("cmdProvider --enabled / --disabled", () => {
+  let root: string;
+  beforeEach(() => {
+    root = tmpLappRoot();
+    seedProfile(root);
+  });
+
+  it("provider set --disabled flips enabled:false on the existing ds provider", async () => {
+    const p0 = loadProfile({ path: root, skipValidate: true });
+    expect(p0.providers[0]!.config.enabled).not.toBe(false);
+
+    await captureOutputAsync(() =>
+      cmdProvider(["set", root], {
+        id: "ds", protocol: "openai-chat-completions", "base-url": "https://api.deepseek.com", disabled: true, yes: true,
+      }),
+    );
+    const p1 = loadProfile({ path: root, skipValidate: true });
+    expect(p1.providers[0]!.config.enabled).toBe(false);
   });
 });

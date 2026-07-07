@@ -1,12 +1,15 @@
 {
   "name": "@openlapp/cli",
-  "version": "0.1.0",
-  "description": "CLI for LAPP (Local AI Provider Profiles). Thin wrapper over @openlapp/lapp.",
+  "version": "1.0.0",
+  "description": "CLI for LAPP v1 (Local AI Provider Profiles). Thin wrapper over @openlapp/lapp.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
     "lapp": "./dist/index.js"
+  },
+  "engines": {
+    "node": ">=18.18.0"
   },
   "files": [
     "dist",

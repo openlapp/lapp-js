@@ -20,6 +20,7 @@ import { findConfigFile, readJsonc, relativeLocation } from "./jsonc.js";
 import { validateProfile } from "../validate/index.js";
 import { redactSecret, parseSecretRef } from "../secret/index.js";
 import { CORE_PROTOCOLS, isObject } from "../validate/constants.js";
+import { getProviderProtocols, getPrimaryProtocolId } from "../protocols.js";
 import type {
   Diagnostic,
   GlobalConfig,
@@ -131,6 +132,9 @@ function loadProvider(
 
   config.__file = providerFile;
   config.__dirName = dirName;
+  if (typeof config.protocol !== "string" || config.protocol.trim() === "") {
+    config.protocol = getPrimaryProtocolId(config);
+  }
 
   if (typeof config.id === "string" && config.id !== dirName) {
     diagnostics.push({
@@ -140,11 +144,12 @@ function loadProvider(
     });
   }
 
-  if (typeof config.protocol === "string" && !CORE_PROTOCOLS.has(config.protocol)) {
+  for (const protocol of getProviderProtocols(config)) {
+    if (CORE_PROTOCOLS.has(protocol.id)) continue;
     diagnostics.push({
       level: "WARN",
       location: relativeLocation(root, providerFile),
-      message: `protocol "${config.protocol}" is not a core LAPP v1 protocol`,
+      message: `protocol "${protocol.id}" is not a core LAPP v1 protocol`,
     });
   }
 
@@ -237,7 +242,13 @@ export function loadProfile(options: LoadProfileOptions = {}): LappProfile {
 
   if (!options.skipValidate) {
     const result = validateProfile(profile);
-    // Merge validator diagnostics (dedupe by location+message).
+    // Merge validator diagnostics (dedupe by level+location+message). The
+    // dedup key is intentionally narrow: it covers the common case where
+    // load-time (e.g. "missing provider.json") and validate-time (e.g.
+    // "missing required field 'id'") would otherwise emit duplicates for
+    // the same file. A rare shifted-index re-emit can still be lost, but
+    // adding a richer discriminator would leak implementation details
+    // into the public `Diagnostic` type — accept the small loss in v1.
     for (const d of result.diagnostics) {
       if (!diagnostics.some((x) => x.level === d.level && x.location === d.location && x.message === d.message)) {
         diagnostics.push(d);
@@ -282,9 +293,10 @@ export function inspectProfile(
         id: p.config.id,
         name: p.config.name,
         enabled: p.config.enabled !== false,
-        protocol: p.config.protocol,
+        protocol: getPrimaryProtocolId(p.config),
+        protocols: getProviderProtocols(p.config),
         baseUrl: p.config.baseUrl,
-        coreProtocol: CORE_PROTOCOLS.has(p.config.protocol),
+        coreProtocol: CORE_PROTOCOLS.has(getPrimaryProtocolId(p.config)),
         secret: summary,
         modelCount: p.models?.models.length ?? 0,
         models: (p.models?.models ?? []).map((m) => ({

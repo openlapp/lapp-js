@@ -21,9 +21,9 @@ describe("stripJsonc", () => {
 describe("readJsonc on sibling fixtures", () => {
   it("reads jsonc provider example", () => {
     const f = path.join(lappRoot, "examples/en/full/.lapp/providers/deepseek/provider.jsonc");
-    const data = readJsonc(f) as { id: string; protocol: string };
+    const data = readJsonc(f) as { id: string; protocols: string[] };
     expect(data.id).toBe("deepseek");
-    expect(data.protocol).toBe("openai-chat-completions");
+    expect(data.protocols[0]).toBe("openai-chat-completions");
   });
 
   it("findConfigFile prefers .json then .jsonc", () => {

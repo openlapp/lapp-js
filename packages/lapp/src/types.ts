@@ -10,6 +10,24 @@
 
 export type Protocol = string;
 
+export type ProtocolEntry =
+  | Protocol
+  | {
+      id: Protocol;
+      baseUrl?: string;
+      requestHeaders?: Record<string, string>;
+      capabilities?: string[];
+      [extra: string]: unknown;
+    };
+
+export interface ResolvedProtocolEntry {
+  id: Protocol;
+  baseUrl?: string;
+  requestHeaders?: Record<string, string>;
+  capabilities?: string[];
+  [extra: string]: unknown;
+}
+
 export type SecretScheme = "plaintext" | "env" | "keychain" | "file" | "unknown";
 
 /** A parsed secret reference. */
@@ -44,7 +62,10 @@ export interface ProviderConfig {
   id: string;
   name?: string;
   enabled?: boolean;
+  /** Legacy single protocol string. New profiles should prefer `protocols`. */
   protocol: Protocol;
+  /** Supported protocol adapters in preference order. */
+  protocols?: ProtocolEntry[];
   baseUrl: string;
   links?: LinkMap;
   auth?: AuthConfig;
@@ -152,6 +173,7 @@ export interface ProfileSummary {
     name?: string;
     enabled: boolean;
     protocol: Protocol;
+    protocols: ResolvedProtocolEntry[];
     baseUrl: string;
     coreProtocol: boolean;
     secret: SecretSummary;

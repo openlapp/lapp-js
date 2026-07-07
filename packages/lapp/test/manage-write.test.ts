@@ -9,9 +9,12 @@ import {
   removeProvider,
   removeModel,
   setDefaultModel,
+  setDefaultModelRef,
   planChanges,
   writeProfileAtomic,
   loadProfile,
+  applySyncedModels,
+  ensureGlobal,
   validateProfile,
   isSupportedProtocol,
 } from "../src/index.js";
@@ -53,13 +56,91 @@ describe("createProfile + manage", () => {
     expect(p.providers).toHaveLength(0);
   });
 
-  it("setDefaultModel sets global default and clears on provider removal", () => {
+  it("setDefaultModelRef sets all default slots and removeProvider clears them", () => {
     let p = createProfile({ rootDir: "/tmp/x/.lapp", global: true });
     p = upsertProvider(p, { id: "ds", protocol: "openai-chat-completions", baseUrl: "https://x" });
-    p = setDefaultModel(p, { providerId: "ds", model: "m" });
-    expect(p.global?.defaultModel?.providerId).toBe("ds");
+    p = setDefaultModelRef(p, "defaultEmbeddingModel", { providerId: "ds", model: "e" });
+    p = setDefaultModelRef(p, "defaultImageModel", { providerId: "ds", model: "i" });
+    p = setDefaultModelRef(p, "defaultTextToSpeechModel", { providerId: "ds", model: "t" });
+    p = setDefaultModelRef(p, "defaultVideoModel", { providerId: "ds", model: "v" });
+    expect(p.global?.defaultEmbeddingModel?.model).toBe("e");
+    expect(p.global?.defaultImageModel?.model).toBe("i");
+    expect(p.global?.defaultTextToSpeechModel?.model).toBe("t");
+    expect(p.global?.defaultVideoModel?.model).toBe("v");
     p = removeProvider(p, "ds");
-    expect(p.global?.defaultModel).toBeUndefined();
+    expect(p.global?.defaultEmbeddingModel).toBeUndefined();
+    expect(p.global?.defaultImageModel).toBeUndefined();
+    expect(p.global?.defaultTextToSpeechModel).toBeUndefined();
+    expect(p.global?.defaultVideoModel).toBeUndefined();
+  });
+
+  it("upsertModel preserves links and metadata on update", () => {
+    let p = createProfile({ rootDir: "/tmp/x/.lapp" });
+    p = upsertProvider(p, { id: "ds", protocol: "openai-chat-completions", baseUrl: "https://x" });
+    p = upsertModel(p, {
+      providerId: "ds",
+      id: "deepseek-chat",
+      type: "chat",
+      links: { docs: "https://docs.example.com" },
+      metadata: { foo: "bar" },
+    });
+    // Update only type — links and metadata must survive.
+    p = upsertModel(p, { providerId: "ds", id: "deepseek-chat", type: "chat" });
+    const m = p.providers[0]!.models!.models[0]!;
+    expect(m.links).toEqual({ docs: "https://docs.example.com" });
+    expect(m.metadata).toEqual({ foo: "bar" });
+  });
+
+  it("writeProfileAtomic does NOT stamp updatedAt on manage-driven writes", async () => {
+    // Regression: previously every write re-stamped `updatedAt`, which
+    // made the field unreliable as a "last synced" marker. Now only sync
+    // flow (tagged by `applySyncedModels`) re-stamps; manage-driven writes
+    // preserve whatever `updatedAt` the caller set.
+    const root = tmpRoot();
+    let p = createProfile({ rootDir: root });
+    p = upsertProvider(p, { id: "ds", protocol: "openai-chat-completions", baseUrl: "https://x" });
+    p = upsertModel(p, { providerId: "ds", id: "m", type: "chat" });
+    // Caller explicitly sets a sentinel updatedAt; write should preserve it.
+    p = {
+      ...p,
+      providers: p.providers.map((prov) =>
+        prov.config.id === "ds" && prov.models
+          ? { ...prov, models: { ...prov.models, updatedAt: "2025-01-01T00:00:00.000Z" } }
+          : prov,
+      ),
+    };
+    await writeProfileAtomic(p);
+    const written = JSON.parse(fs.readFileSync(path.join(root, "providers/ds/models.json"), "utf8"));
+    expect(written.updatedAt).toBe("2025-01-01T00:00:00.000Z");
+  });
+
+  it("writeProfileAtomic stamps updatedAt when models.json comes from applySyncedModels", async () => {
+    const root = tmpRoot();
+    let p = createProfile({ rootDir: root });
+    p = upsertProvider(p, { id: "ds", protocol: "openai-chat-completions", baseUrl: "https://x" });
+    p = upsertModel(p, { providerId: "ds", id: "m", type: "chat" });
+    // Simulate the sync flow: applySyncedModels tags the ModelsConfig with
+    // an internal `__lappUpdatedAtSource: "sync"` marker, and stamps a fresh
+    // updatedAt. The writer must propagate the fresh stamp.
+    const synced = applySyncedModels(p.providers[0]!.models, {
+      models: [{ id: "m", source: "provider", type: "chat" }],
+      added: [],
+      removed: [],
+      updated: [],
+    });
+    p = {
+      ...p,
+      providers: p.providers.map((prov) =>
+        prov.config.id === "ds" ? { ...prov, models: synced } : prov,
+      ),
+    };
+    const beforeWrite = Date.now();
+    await writeProfileAtomic(p);
+    const written = JSON.parse(fs.readFileSync(path.join(root, "providers/ds/models.json"), "utf8"));
+    const writtenMs = new Date(written.updatedAt).getTime();
+    expect(writtenMs).toBeGreaterThanOrEqual(beforeWrite - 5_000);
+    // Internal marker must NOT appear on disk (stableStringify strips `__`-prefixed fields)
+    expect((written as Record<string, unknown>).__lappUpdatedAtSource).toBeUndefined();
   });
 
   // Regression: upsertProvider on an existing provider must preserve
@@ -390,12 +471,15 @@ describe("writeProfileAtomic", () => {
   });
 
   // validateProvider: model source outside {provider, manual}
-  it("validateProvider warns on unknown model source value", () => {
+  // Per the LAPP spec, `source` is a closed enum, so an out-of-enum value
+  // is structurally invalid (ERROR) — not just a soft WARN. The corresponding
+  // happy-path is tested by schema-alignment.test.ts and load.test.ts.
+  it("validateProvider errors on unknown model source value", () => {
     let p = createProfile({ rootDir: "/tmp/.lapp" });
     p = upsertProvider(p, { id: "ds", protocol: "openai-chat-completions", baseUrl: "https://x" });
     p = upsertModel(p, { providerId: "ds", id: "m1", type: "chat", source: "unknown-source" } as Parameters<typeof upsertModel>[1]);
     const r = validateProfile(p);
-    expect(r.diagnostics.some((d) => d.level === "WARN" && /source "unknown-source"/.test(d.message))).toBe(true);
+    expect(r.diagnostics.some((d) => d.level === "ERROR" && /source "unknown-source"/.test(d.message))).toBe(true);
   });
 
   // validateProvider: sensitive headers warning (via upsertProvider requestHeaders)
@@ -550,5 +634,84 @@ describe("validate negative cases", () => {
       models: [{ id: "in-m", type: "chat", source: "manual" }],
     });
     expect(p.providers[0]!.models?.models[0]!.id).toBe("in-m");
+  });
+});
+
+describe("ensureGlobal", () => {
+  it("initializes a missing global with schemaVersion 1.0 and does not mutate the input", () => {
+    const p = createProfile({ rootDir: "/tmp/.lapp" });
+    expect(p.global).toBeUndefined();
+    const out = ensureGlobal(p);
+    expect(out.global).toEqual({ schemaVersion: "1.0" });
+    // Original is untouched
+    expect(p.global).toBeUndefined();
+    // Output is a fresh object
+    expect(out).not.toBe(p);
+  });
+
+  it("returns the input unchanged (same reference) when global is already set", () => {
+    const p = createProfile({ rootDir: "/tmp/.lapp", global: true });
+    const original = p;
+    const out = ensureGlobal(p);
+    expect(out).toBe(original);
+  });
+});
+
+// Regression coverage for Round 4 findings F9 (multi-protocol array wipe)
+// and F11 (sync marker surviving manage edits).
+describe("upsertProvider: multi-protocol preservation (F9)", () => {
+  it("preserves existing protocols array when input.protocol is set without input.protocols", () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, {
+      id: "multi",
+      protocol: "openai-responses",
+      baseUrl: "https://x",
+      auth: { secret: "sk" },
+      protocols: [
+        { id: "openai-responses", baseUrl: "https://x" },
+        { id: "openai-chat-completions", baseUrl: "https://y" },
+      ],
+    });
+    expect(p.providers[0]!.config.protocols).toHaveLength(2);
+    // Simulate `lapp provider set --id multi --protocol openai-responses --base-url https://z`
+    const p2 = upsertProvider(p, { id: "multi", protocol: "openai-responses", baseUrl: "https://z" });
+    expect(p2.providers[0]!.config.protocols).toHaveLength(2);
+    // baseUrl-only update must survive on the secondary protocol entry.
+    expect((p2.providers[0]!.config.protocols![1] as { baseUrl?: string }).baseUrl).toBe("https://y");
+  });
+});
+
+describe("manage edits clear the sync marker (F11)", () => {
+  it("upsertModel clears __lappUpdatedAtSource so a sync-then-manage write does not re-stamp", () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, { id: "ds", protocol: "openai-chat-completions", baseUrl: "https://x" });
+    p = upsertModel(p, { providerId: "ds", id: "m", type: "chat" });
+    const synced = applySyncedModels(p.providers[0]!.models, {
+      models: [{ id: "m", source: "provider", type: "chat" }],
+      added: [],
+      removed: [],
+      updated: [],
+    });
+    expect((synced as { __lappUpdatedAtSource?: string }).__lappUpdatedAtSource).toBe("sync");
+    let p2 = { ...p, providers: p.providers.map((pr) => pr.config.id === "ds" ? { ...pr, models: synced } : pr) };
+    const p3 = upsertModel(p2, { providerId: "ds", id: "m", type: "embedding" });
+    const marker = (p3.providers[0]!.models as { __lappUpdatedAtSource?: string }).__lappUpdatedAtSource;
+    expect(marker).toBeUndefined();
+  });
+
+  it("removeModel clears __lappUpdatedAtSource", () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, { id: "ds", protocol: "openai-chat-completions", baseUrl: "https://x" });
+    p = upsertModel(p, { providerId: "ds", id: "m", type: "chat" });
+    const synced = applySyncedModels(p.providers[0]!.models, {
+      models: [{ id: "m", source: "provider", type: "chat" }],
+      added: [],
+      removed: [],
+      updated: [],
+    });
+    let p2 = { ...p, providers: p.providers.map((pr) => pr.config.id === "ds" ? { ...pr, models: synced } : pr) };
+    const p3 = removeModel(p2, { providerId: "ds", model: "m" });
+    const marker = (p3.providers[0]!.models as { __lappUpdatedAtSource?: string }).__lappUpdatedAtSource;
+    expect(marker).toBeUndefined();
   });
 });

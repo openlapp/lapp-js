@@ -115,7 +115,12 @@ function atomicWriteFile(target: string, content: string): void {
 }
 
 function providerRelativePath(provider: LappProvider): { providerPath: string; modelsPath: string | null } {
-  const dirName = provider.config.__dirName ?? provider.config.id;
+  // `__dirName` is normally set by the loader from the directory basename
+  // and matches `provider.config.id`. If a caller writes a profile with an
+  // empty `__dirName` (e.g. hand-crafted JSON), fall back to `id` rather
+  // than the empty string — an empty basename would cause two distinct
+  // providers to clobber each other at `providers//provider.json`.
+  const dirName = provider.config.__dirName || provider.config.id;
   return {
     providerPath: path.join("providers", dirName, "provider.json"),
     modelsPath:
@@ -165,7 +170,23 @@ export async function writeProfileAtomic(
     atomicWriteFile(path.join(root, providerPath), stableStringify(configCopy, indent, trailingNewline));
 
     if (modelsPath && provider.models) {
-      atomicWriteFile(path.join(root, modelsPath), stableStringify(provider.models, indent, trailingNewline));
+      // Only re-stamp `updatedAt` when this `models.json` came from a
+      // sync flow (`applySyncedModels` tags it with the internal marker).
+      // For manage-driven edits we preserve whatever `updatedAt` (if any)
+      // the caller supplied, so a user-curated models.json keeps its
+      // original "last touched" timestamp instead of being silently
+      // rewritten on every write.
+      const internal = provider.models as { __lappUpdatedAtSource?: "sync" | "manual" };
+      const modelsCopy = internal.__lappUpdatedAtSource === "sync"
+        ? { ...provider.models, updatedAt: new Date().toISOString() }
+        : { ...provider.models };
+      // Strip the internal marker from the written copy regardless of
+      // source. `stableStringify` already drops `__`-prefixed fields, but
+      // we clear it explicitly here so the in-memory shape is consistent
+      // and the marker's lifecycle is owned by the manage layer, not the
+      // writer.
+      delete (modelsCopy as { __lappUpdatedAtSource?: unknown }).__lappUpdatedAtSource;
+      atomicWriteFile(path.join(root, modelsPath), stableStringify(modelsCopy, indent, trailingNewline));
     }
   }
 
