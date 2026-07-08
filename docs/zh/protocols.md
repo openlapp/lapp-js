@@ -69,7 +69,7 @@ SDK 选择第一个支持的条目。每个协议级别的 `baseUrl` 和 `reques
 }
 ```
 
-CLI 中使用 `lapp init` 或 `lapp provider add` 时加 `--no-auth`。分步示例见 [local-providers.md](local-providers.md)。
+CLI 中使用 `lapp provider add` 时加 `--no-auth`（或用 `ollama`/`lm-studio`/`vllm` 预设,它们自动设好）。分步示例见 [local-providers.md](local-providers.md)。
 
 ## 不支持的协议
 

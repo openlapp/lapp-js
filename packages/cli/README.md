@@ -4,7 +4,7 @@
 
 所有配置逻辑都在 SDK 中；CLI 只负责解析参数、调用 SDK、打印结果并对密钥脱敏。
 
-> **Languages:** [English](https://github.com/openlapp/lapp-js/blob/main/README.md) | [中文](https://github.com/openlapp/lapp-js/blob/main/docs/zh/README.md)
+> **Languages:** [English](https://github.com/openlapp/lapp-js/blob/main/README.md) | [中文](https://github.com/openlapp/lapp-js/blob/main/README_zh.md)
 
 ## 安装
 
@@ -19,17 +19,19 @@ npm install -g @openlapp/cli
 ```text
 lapp validate [path]
 lapp inspect [path] [--reveal-secrets]
-lapp init [path] --provider <id> --protocol <p> --base-url <url> [--secret <ref>] [--model <id>]
-lapp provider add|set [path] --id <id> --protocol <p> --base-url <url> [--secret <ref>]
+lapp provider add|set [path] --id <id|preset> [--protocol <p>...] [--protocol-base-url <url>] [--protocol-header 'k: v']... [--base-url <url>] [--secret <ref>] [--auth-type bearer|header|query|none] [--auth-header <name>] [--auth-query-param <name>] [--no-auth] [--model <id>] [--name <s>] [--header 'k: v']... [--link k=v]... [--enabled|--disabled] [--force]
 lapp provider remove [path] --id <id>
-lapp model add|set [path] --provider <id> --id <id> [--alias <a>...] [--type <t>]
+lapp model add|set [path] --provider <id> --id <id> [--alias <a>...] [--type <t>] [--capability <c>...] [--input-modality <m>...] [--output-modality <m>...] [--context-window <n>] [--max-output-tokens <n>] [--model-protocol <p>] [--link k=v]... [--metadata k=v]... [--metadata-json '{...}'] [--enabled|--disabled]
 lapp model remove [path] --provider <id> --id <id>
-lapp models sync [path] --provider <id> [--apply] [--remove-stale]
+lapp models list [path]
+lapp models sync [path] --provider <id> [--apply] [--remove-stale] [--set-default] [--kind chat|embedding|image|tts|video]
 lapp default set [path] --provider <id> --model <id> [--kind chat|embedding|image|tts|video]
 lapp env [path] --format bash|zsh|fish|powershell|cmd [--resolve] [--allow-plaintext]
+lapp presets
 lapp ping [provider[/model]] [path]
-lapp chat [provider[/model]] <message> [path] [--provider <id> --model <id>] [--stream] [--tool <name:description:schema>]
+lapp chat [provider[/model]] <message> [path] [--provider <id> --model <id>] [--stream] [--tool <name:description:schema>] [--session <name> | --continue] [--system <prompt>] [--file <path>...] [--json] [--debug]
 lapp doctor [path]
+lapp completions <bash|zsh|fish|powershell>
 ```
 
 ## 全局参数

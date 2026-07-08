@@ -8,8 +8,11 @@ export function normalizeProtocolEntry(entry: unknown): ResolvedProtocolEntry | 
   if (entry && typeof entry === "object" && !Array.isArray(entry)) {
     const obj = entry as Record<string, unknown>;
     if (typeof obj.id !== "string" || obj.id.trim() === "") return null;
+    // Strip the known fields from the spread so invalid shapes (non-string
+    // baseUrl, array requestHeaders) are dropped rather than leaked through.
+    const { id: _id, baseUrl: _baseUrl, requestHeaders: _requestHeaders, capabilities: _capabilities, ...rest } = obj;
     return {
-      ...obj,
+      ...rest,
       id: obj.id.trim(),
       ...(typeof obj.baseUrl === "string" ? { baseUrl: obj.baseUrl } : {}),
       ...(obj.requestHeaders && typeof obj.requestHeaders === "object" && !Array.isArray(obj.requestHeaders)

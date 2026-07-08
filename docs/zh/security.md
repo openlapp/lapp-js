@@ -86,16 +86,10 @@ const client = createLappClient({
 ```
 
 ```bash
-lapp init ~/.lapp \
-  --provider ollama \
-  --protocol openai-chat-completions \
-  --base-url http://localhost:11434/v1 \
-  --no-auth \
-  --model llama3 \
-  --yes
+lapp provider add --id ollama --yes
 ```
 
-`allowUnauthenticated` 会跳过认证头，但其他解析错误仍会快速失败。
+`allowUnauthenticated` 会跳过认证头，但其他解析错误仍会快速失败。CLI 的 `lapp chat` / `lapp ping` 对这类提供者自动放行。
 
 ## 实用建议
 

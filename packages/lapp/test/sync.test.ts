@@ -8,6 +8,9 @@ import {
   buildModelSyncResult,
   fetchProviderModels,
   ModelSyncUnsupportedError,
+  TargetResolutionError,
+  UnsupportedProtocolError,
+  MissingEnvSecretError,
 } from "../src/index.js";
 import { inferCapabilitiesFromProviderEntry } from "../src/sync/capabilities.js";
 import { diffModels } from "../src/sync/diff.js";
@@ -283,5 +286,170 @@ describe("inferCapabilitiesFromProviderEntry: image-generation id (F7)", () => {
       "openai-chat-completions",
     );
     expect(r.type).toBe("image");
+  });
+});
+
+describe("diffModels: edge cases", () => {
+  it("detects updated entries when name changes", () => {
+    const before = [{ id: "a", name: "old", type: "chat" }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a", name: "new", type: "chat" }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.added).toHaveLength(0);
+    expect(result.removed).toHaveLength(0);
+    expect(result.updated).toHaveLength(1);
+  });
+
+  it("detects update when capabilities differ", () => {
+    const before = [{ id: "a", capabilities: ["chat"] }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a", capabilities: ["chat", "stream"] }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.updated).toHaveLength(1);
+  });
+
+  it("detects update when contextWindow differs", () => {
+    const before = [{ id: "a", contextWindow: 4096 }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a", contextWindow: 8192 }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.updated).toHaveLength(1);
+  });
+
+  it("detects update when maxOutputTokens differs", () => {
+    const before = [{ id: "a", maxOutputTokens: 1024 }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a", maxOutputTokens: 2048 }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.updated).toHaveLength(1);
+  });
+
+  it("detects update when inputModalities differ", () => {
+    const before = [{ id: "a", inputModalities: ["text"] }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a", inputModalities: ["text", "image"] }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.updated).toHaveLength(1);
+  });
+
+  it("detects update when outputModalities differ", () => {
+    const before = [{ id: "a", outputModalities: ["text"] }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a", outputModalities: ["text", "audio"] }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.updated).toHaveLength(1);
+  });
+
+  it("treats empty before and empty after as no changes", () => {
+    const result = diffModels([], []);
+    expect(result.added).toHaveLength(0);
+    expect(result.removed).toHaveLength(0);
+    expect(result.updated).toHaveLength(0);
+  });
+
+  it("treats all-as-new when before is empty", () => {
+    const after = [{ id: "a" }, { id: "b" }] as ReturnType<typeof diffModels>["added"];
+    const result = diffModels([], after);
+    expect(result.added.map((m) => m.id)).toEqual(["a", "b"]);
+  });
+
+  it("treats all-as-removed when after is empty", () => {
+    const before = [{ id: "a" }, { id: "b" }] as ReturnType<typeof diffModels>["added"];
+    const result = diffModels(before, []);
+    expect(result.removed.map((m) => m.id)).toEqual(["a", "b"]);
+  });
+
+  it("arraysEqual: both undefined fields are equal", () => {
+    const before = [{ id: "a" }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a" }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.updated).toHaveLength(0);
+  });
+
+  it("arraysEqual: one undefined, one empty array are treated as different", () => {
+    const before = [{ id: "a", capabilities: undefined }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a", capabilities: [] }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.updated).toHaveLength(1);
+  });
+
+  it("user-curated fields do not trigger update", () => {
+    const before = [{ id: "a", type: "chat", enabled: true, aliases: ["x"] }] as ReturnType<typeof diffModels>["added"];
+    const after = [{ id: "a", type: "chat", enabled: false, aliases: ["y"] }] as typeof before;
+    const result = diffModels(before, after);
+    expect(result.updated).toHaveLength(0);
+  });
+});
+
+describe("sync: fetchProviderModels additional paths", () => {
+  it("openai-responses protocol syncs via /models", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, {
+      id: "resp",
+      protocol: "openai-responses",
+      baseUrl: "https://api.test/v1",
+      auth: { secret: "sk-test" },
+    });
+    const fetchImpl = stubFetch({ data: [{ id: "gpt-4o" }] });
+    const fetched = await fetchProviderModels(p, "resp", { resolveSecrets: true, fetchImpl });
+    expect(fetched[0]!.id).toBe("gpt-4o");
+  });
+
+  it("anthropic with modelsUrl syncs via openai-compat", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, {
+      id: "anth",
+      protocol: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com",
+      auth: { secret: "sk-ant" },
+      links: { models: "https://gateway/models" },
+    });
+    const fetchImpl = stubFetch({ data: [{ id: "claude-3" }] });
+    const fetched = await fetchProviderModels(p, "anth", { resolveSecrets: true, fetchImpl });
+    expect(fetched[0]!.id).toBe("claude-3");
+  });
+
+  it("disabled provider throws TargetResolutionError", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, {
+      id: "off",
+      protocol: "openai-chat-completions",
+      baseUrl: "https://x",
+      enabled: false,
+      auth: { secret: "sk" },
+    });
+    await expect(fetchProviderModels(p, "off", { resolveSecrets: true })).rejects.toThrow(TargetResolutionError);
+  });
+
+  it("unknown protocol throws UnsupportedProtocolError", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, {
+      id: "x",
+      protocol: "unknown-protocol",
+      baseUrl: "https://x",
+      auth: { secret: "sk" },
+    });
+    await expect(fetchProviderModels(p, "x", { resolveSecrets: true })).rejects.toThrow(/unsupported protocol/i);
+  });
+});
+
+describe("sync: resolveSecret failure path", () => {
+  it("fetchProviderModels keeps env:// unresolved when resolveSecrets:false", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, {
+      id: "env",
+      protocol: "openai-chat-completions",
+      baseUrl: "https://x",
+      auth: { secret: "env://NONEXISTENT_VAR_FOR_TEST" },
+    });
+    // With resolveSecrets:false the secret must stay as the literal env://
+    // reference; the implementation must not touch process.env.
+    const provider = p.providers.find((x) => x.config.id === "env")!;
+    expect(provider.config.auth).toEqual({ secret: "env://NONEXISTENT_VAR_FOR_TEST" });
+  });
+
+  it("fetchProviderModels throws MissingEnvSecretError when resolveSecrets:true and env var is missing", async () => {
+    let p = createProfile({ rootDir: "/tmp/.lapp" });
+    p = upsertProvider(p, {
+      id: "env",
+      protocol: "openai-chat-completions",
+      baseUrl: "https://x",
+      auth: { secret: "env://NONEXISTENT_VAR_FOR_TEST" },
+    });
+    await expect(fetchProviderModels(p, "env", { resolveSecrets: true })).rejects.toThrow(MissingEnvSecretError);
   });
 });

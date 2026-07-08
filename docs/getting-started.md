@@ -1,91 +1,155 @@
-# Getting started with lapp-js
+# Getting started
 
-`lapp-js` is the TypeScript implementation of LAPP (Local AI Provider Profiles). It gives you a client SDK (`@openlapp/lapp`) and a thin CLI (`lapp`) for reading, validating, and writing `.lapp` profiles, then sending requests directly to configured providers.
+`lapp-js` lets you describe your AI providers in one local profile, then call them from the terminal (`@openlapp/cli`) or from TypeScript (`@openlapp/lapp`).
 
 ```text
-.lapp profile
-  -> @openlapp/lapp SDK
-  -> protocol adapter
-  -> provider API
+.lapp profile  →  @openlapp/lapp SDK  →  protocol adapter  →  provider API
 ```
 
-`lapp-js` is a client, not a gateway: there is no persistent server, no proxying for other apps, and no billing.
+It is a **client, not a gateway**: no server, no proxying, no billing — your process talks to the provider directly.
 
 ## Install
 
-CLI:
-
 ```bash
-npm install -g @openlapp/cli
-```
-
-SDK in a project:
-
-```bash
-npm install @openlapp/lapp
+npm install -g @openlapp/cli     # the CLI
+npm install @openlapp/lapp       # the SDK (in a project)
 ```
 
 Requires Node 18.18 or newer.
 
-## Hello, CLI
+## 1 · Configure a provider (once)
 
-Create a profile at `~/.lapp` and chat with the default model:
+A profile is just a directory (by default `~/.lapp`) holding a few JSON files. The fastest way to create one is `lapp provider add`, which registers a provider and (with `--model`) sets your default model in one command. For well-known providers, a **preset** fills in the protocol, base URL, and suggested secret automatically.
+
+**OpenAI** — set your key, then add:
 
 ```bash
-lapp init ~/.lapp \
-  --provider openai \
-  --protocol openai-chat-completions \
-  --base-url https://api.openai.com/v1 \
-  --secret env://OPENAI_API_KEY \
-  --model gpt-4o \
-  --yes
-
-lapp validate
-lapp chat "Say hi in five words."
-lapp doctor
+export OPENAI_API_KEY=sk-...
+lapp provider add --id openai --model gpt-4o --yes
 ```
 
-Write commands always show a change plan first and require `--yes` to apply (or `--dry-run` to preview only).
+`lapp provider add` takes:
+- `--id <id|preset>` — a name **you** pick (used to address this provider later), or a known preset id like `openai` / `anthropic` / `ollama` (`lapp presets` lists them all).
+- `--protocol` / `--base-url` — how to talk to it. Required for custom providers; **omitted when a preset supplies them**.
+- `--secret env://NAME` — read the key from an environment variable (recommended). A preset fills the conventional `env://<PROVIDER>_API_KEY` if you omit it. Plaintext also works but stays on disk.
+- `--model` — register a model **and** make it the default in one step.
+- `--yes` — apply the change (write commands show a plan first; use `--dry-run` to preview).
 
-## Hello, SDK
+## 2 · Chat (every time)
+
+```bash
+lapp chat "Say hi in five words."          # uses the default model
+lapp chat --stream "Count to ten"          # stream the reply
+```
+
+Pick a different target inline — `provider/model` as the first word:
+
+```bash
+lapp chat openai/gpt-4o-mini "Quick one."  # inline target
+```
+
+…or with flags (handy when the message itself contains a slash):
+
+```bash
+lapp chat "Compare A/B testing" --provider openai --model gpt-4o-mini
+```
+
+You can also **change the default** and then keep using the one-liner:
+
+```bash
+lapp default set --provider openai --model gpt-4o-mini --kind chat --yes
+lapp chat "Now this uses gpt-4o-mini."
+```
+
+## 3 · Add a second provider
+
+`lapp provider add` appends to an existing profile. Use `--force` if you instead want to reset the profile to just the new provider.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+lapp provider add --id anthropic --model claude-sonnet-4 --yes
+```
+
+Now `lapp chat "Hi"` routes to the most recently relevant default, and `lapp chat openai/gpt-4o "Hi"` reaches OpenAI.
+
+## 4 · Look around
+
+```bash
+lapp inspect              # human-readable summary (secrets redacted)
+lapp validate             # structural + semantic checks
+lapp doctor               # validate + can every enabled provider become a client?
+lapp ping openai/gpt-4o   # 1-token test request
+lapp presets              # list built-in provider presets
+```
+
+## Provider recipes
+
+Two ways to add a provider — preset (one line) or fully explicit:
+
+```bash
+# Preset
+lapp provider add --id openai --model gpt-4o --yes
+
+# Fully explicit (custom/self-hosted)
+lapp provider add --id my-proxy --protocol openai-chat-completions \
+  --base-url https://my-proxy.example.com/v1 --secret env://MY_PROXY_KEY --yes
+```
+
+Common `--protocol` and `--base-url` values (for the explicit form):
+
+| Provider | `--protocol` | `--base-url` | Auth |
+|----------|--------------|--------------|------|
+| OpenAI | `openai-chat-completions` | `https://api.openai.com/v1` | `env://OPENAI_API_KEY` |
+| OpenAI Responses | `openai-responses` | `https://api.openai.com/v1` | `env://OPENAI_API_KEY` |
+| Anthropic | `anthropic-messages` | `https://api.anthropic.com` | `env://ANTHROPIC_API_KEY` |
+| DeepSeek | `openai-chat-completions` | `https://api.deepseek.com/v1` | `env://DEEPSEEK_API_KEY` |
+| OpenRouter | `openai-chat-completions` | `https://openrouter.ai/api/v1` | `env://OPENROUTER_API_KEY` |
+| Ollama (local) | `openai-chat-completions` | `http://localhost:11434/v1` | `--no-auth` |
+| LM Studio (local) | `openai-chat-completions` | `http://localhost:1234/v1` | `--no-auth` |
+| vLLM (local) | `openai-chat-completions` | `http://localhost:8000/v1` | `--no-auth` |
+
+Notes:
+- `lapp-js` never auto-appends `/v1` for OpenAI-compatible providers — include it in `--base-url` if your provider needs it. Don't end `--base-url` with `/`.
+- Anthropic's adapter dedups a trailing `/v1` only when it is the sole last segment.
+- For local servers, pass `--no-auth` to skip the auth header. Full walkthrough: [local-providers.md](local-providers.md).
+
+### Pull the model list from the provider
+
+For OpenAI-compatible providers, sync the model list from their `/models` endpoint:
+
+```bash
+lapp models sync --provider ollama                 # preview
+lapp models sync --provider ollama --apply --yes   # write it in
+lapp models sync --provider ollama --apply --set-default --yes   # write + set first chat model as default
+```
+
+Anthropic has no public model-list endpoint; set `provider.links.models` to point at one (see [protocols.md](protocols.md)).
+
+## From TypeScript
 
 ```ts
 import { loadProfile, createLappClient, listModels } from "@openlapp/lapp";
 
 const profile = loadProfile();
 
-// List every available model across all providers
+// Every available model, across all providers
 const models = listModels(profile);
-// [{ providerId, modelId, protocol, baseUrl, type, capabilities, ... }, ...]
 
 // Chat with the global default
 const client = createLappClient({ profile, resolveSecrets: true });
-const resp = await client.chat({
-  messages: [{ role: "user", content: "Hello!" }],
-});
+const resp = await client.chat({ messages: [{ role: "user", content: "Hello!" }] });
 console.log(resp.text);
 
-// Streaming
+// Stream
 for await (const ev of client.stream({ messages: [{ role: "user", content: "Hello!" }] })) {
   if (ev.kind === "delta") process.stdout.write(ev.text);
 }
+
+// Target a specific provider/model
+const cc = createLappClient({ profile, provider: "anthropic", model: "claude-sonnet-4", resolveSecrets: true });
 ```
 
-## Local servers (Ollama, LM Studio, vLLM)
-
-Local OpenAI-compatible servers usually do not need authentication. Use `--no-auth` when initializing:
-
-```bash
-lapp init ~/.lapp \
-  --provider ollama \
-  --protocol openai-chat-completions \
-  --base-url http://localhost:11434/v1 \
-  --no-auth \
-  --model llama3 \
-  --yes
-```
-
-See [local-providers.md](local-providers.md) for a full walkthrough.
+`resolveSecrets: true` is required to actually call a provider — the SDK never reads `process.env` unless you opt in. See [sdk.md](sdk.md) for the full API.
 
 ## Supported protocols
 

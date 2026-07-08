@@ -86,16 +86,10 @@ const client = createLappClient({
 ```
 
 ```bash
-lapp init ~/.lapp \
-  --provider ollama \
-  --protocol openai-chat-completions \
-  --base-url http://localhost:11434/v1 \
-  --no-auth \
-  --model llama3 \
-  --yes
+lapp provider add --id ollama --yes
 ```
 
-`allowUnauthenticated` skips the auth header but still fails fast on other resolve errors.
+`allowUnauthenticated` skips the auth header but still fails fast on other resolve errors. The CLI auto-allow-unauthenticated for `lapp chat` / `lapp ping` against such providers.
 
 ## Practical recommendations
 

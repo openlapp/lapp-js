@@ -4,7 +4,7 @@
 
 读取、验证、编写、管理 `.lapp` 配置，并直接调用提供者 —— 不是网关，没有持久化服务器。
 
-> **Languages:** [English](https://github.com/openlapp/lapp-js/blob/main/README.md) | [中文](https://github.com/openlapp/lapp-js/blob/main/docs/zh/README.md)
+> **Languages:** [English](https://github.com/openlapp/lapp-js/blob/main/README.md) | [中文](https://github.com/openlapp/lapp-js/blob/main/README_zh.md)
 
 ## 安装
 

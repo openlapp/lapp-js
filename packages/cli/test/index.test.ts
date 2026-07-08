@@ -21,11 +21,16 @@ import {
   looksLikePath,
   parseTarget,
   parseToolSpec,
+  parseHeaderSpec,
+  parseHeaderSpecs,
+  parseKeyValueEquals,
+  parseProtocolBlock,
+  resolveAllowUnauthenticated,
+  buildProviderInput,
   printDiagnostics,
   maybeWrite,
   cmdValidate,
   cmdInspect,
-  cmdInit,
   cmdProvider,
   cmdModel,
   cmdDefault,
@@ -59,7 +64,7 @@ function tmpLappRoot(): string {
 function seedProfile(root: string): LappProfile {
   fs.mkdirSync(path.join(root, "providers", "ds"), { recursive: true });
   fs.writeFileSync(path.join(root, "providers", "ds", "provider.json"), JSON.stringify({
-    schemaVersion: "1.0", id: "ds", protocol: "openai-chat-completions", baseUrl: "https://api.deepseek.com", auth: { secret: "env://DEEPSEEK_KEY" },
+    schemaVersion: "1.0", id: "ds", protocols: [{ id: "openai-chat-completions" }], baseUrl: "https://api.deepseek.com", auth: { secret: "env://DEEPSEEK_KEY" },
   }, null, 2), "utf8");
   fs.writeFileSync(path.join(root, "providers", "ds", "models.json"), JSON.stringify({
     schemaVersion: "1.0", models: [{ id: "deepseek-chat", type: "chat", aliases: ["fast"] }],
@@ -211,6 +216,66 @@ describe("parseFlags", () => {
     const r = parseFlags([]);
     expect(r.args).toEqual([]);
     expect(r.flags).toEqual({});
+  });
+
+  it("--flag=false (equals form) sets boolean false for known boolean flags", () => {
+    const r = parseFlags(["--enabled=false", "--stream=false", "--json=false", "--force=false"]);
+    expect(r.flags.enabled).toBe(false);
+    expect(r.flags.stream).toBe(false);
+    expect(r.flags.json).toBe(false);
+    expect(r.flags.force).toBe(false);
+  });
+
+  it("--flag=true (equals form) sets boolean true for known boolean flags", () => {
+    const r = parseFlags(["--debug=true", "--apply=true", "--dry-run=true"]);
+    expect(r.flags.debug).toBe(true);
+    expect(r.flags.apply).toBe(true);
+    expect(r.flags["dry-run"]).toBe(true);
+  });
+
+  it("--flag=0 (equals form) sets boolean false for known boolean flags", () => {
+    const r = parseFlags(["--enabled=0", "--no-auth=0"]);
+    expect(r.flags.enabled).toBe(false);
+    expect(r.flags["no-auth"]).toBe(false);
+  });
+
+  it("--flag=1 (equals form) sets boolean true for known boolean flags", () => {
+    const r = parseFlags(["--enabled=1", "--apply=1"]);
+    expect(r.flags.enabled).toBe(true);
+    expect(r.flags.apply).toBe(true);
+  });
+
+  it("--flag false (space form) sets boolean false for boolean flags", () => {
+    const r = parseFlags(["--enabled", "false", "--stream", "false"]);
+    expect(r.flags.enabled).toBe(false);
+    expect(r.flags.stream).toBe(false);
+    expect(r.args).toEqual([]);
+  });
+
+  it("--flag true (space form) sets boolean true for boolean flags", () => {
+    const r = parseFlags(["--debug", "true", "--force", "true"]);
+    expect(r.flags.debug).toBe(true);
+    expect(r.flags.force).toBe(true);
+    expect(r.args).toEqual([]);
+  });
+
+  it("boolean flag without value still defaults to true", () => {
+    const r = parseFlags(["--enabled", "--json"]);
+    expect(r.flags.enabled).toBe(true);
+    expect(r.flags.json).toBe(true);
+  });
+
+  it("non-boolean flag with value false is treated as string", () => {
+    const r = parseFlags(["--provider", "false", "--model", "true"]);
+    expect(r.flags.provider).toBe("false");
+    expect(r.flags.model).toBe("true");
+  });
+
+  it("--flag=anything (not false/0) is treated as true for booleans", () => {
+    // A non-standard value like --enabled=yes → true (safe default)
+    const r = parseFlags(["--enabled=yes", "--force=maybe"]);
+    expect(r.flags.enabled).toBe(true);
+    expect(r.flags.force).toBe(true);
   });
 });
 
@@ -497,62 +562,65 @@ describe("cmdInspect", () => {
 });
 
 // ---------------------------------------------------------------------------
-// cmdInit
+// cmdProvider — first-provider creation (absorbs the old cmdInit surface)
 // ---------------------------------------------------------------------------
 
-describe("cmdInit", () => {
+describe("cmdProvider add — first-provider creation", () => {
   let root: string;
 
   beforeEach(() => {
     root = tmpLappRoot();
   });
 
-  it("creates a new profile with provider and model", async () => {
+  it("creates a new profile with provider and model via add", async () => {
     const { lines, code } = await captureOutputAsync(() =>
-      cmdInit([root], { provider: "openai", protocol: "openai-chat-completions", "base-url": "https://api.openai.com", model: "gpt-4o", yes: true }),
+      cmdProvider(["add", root], { id: "openai", protocol: "openai-chat-completions", "base-url": "https://api.openai.com", model: "gpt-4o", yes: true }),
     );
     expect(code).toBe(0);
     expect(lines.some((l) => l.includes("written"))).toBe(true);
-    // Verify on disk
     expect(fs.existsSync(path.join(root, "providers", "openai", "provider.json"))).toBe(true);
     expect(fs.existsSync(path.join(root, "providers", "openai", "models.json"))).toBe(true);
     expect(fs.existsSync(path.join(root, "global.json"))).toBe(true);
+    // manifest is now auto-created on a fresh tree (matches the old init).
+    expect(fs.existsSync(path.join(root, "manifest.json"))).toBe(true);
   });
 
-  it("refuses to overwrite existing profile without --force", async () => {
-    // First init
+  it("appends to an existing profile without --force", async () => {
     await captureOutputAsync(() =>
-      cmdInit([root], { provider: "openai", protocol: "openai-chat-completions", "base-url": "https://api.openai.com", yes: true }),
+      cmdProvider(["add", root], { id: "openai", protocol: "openai-chat-completions", "base-url": "https://api.openai.com", yes: true }),
     );
-    // Second init without --force
-    const { errLines, code } = await captureOutputAsync(() =>
-      cmdInit([root], { provider: "openai2", protocol: "openai-chat-completions", "base-url": "https://x.com", yes: true }),
+    const { code } = await captureOutputAsync(() =>
+      cmdProvider(["add", root], { id: "anthropic", protocol: "anthropic-messages", "base-url": "https://api.anthropic.com", yes: true }),
     );
-    expect(code).toBe(1);
-    expect(errLines.some((l) => l.includes("already exists"))).toBe(true);
+    expect(code).toBe(0);
+    const p = loadProfile({ path: root, skipValidate: true });
+    expect(p.providers.map((x) => x.config.id)).toEqual(expect.arrayContaining(["openai", "anthropic"]));
   });
 
-  it("requires --provider, --protocol, --base-url", async () => {
+  it("requires --id (or a known preset), --protocol, --base-url for add", async () => {
     const { errLines, code } = await captureOutputAsync(() =>
-      cmdInit([root], { yes: true }),
+      cmdProvider(["add", root], { yes: true }),
     );
     expect(code).toBe(2);
     expect(errLines.some((l) => l.includes("requires"))).toBe(true);
   });
 
-  it("supports --force to overwrite", async () => {
+  it("--force resets an existing populated profile to just the new provider", async () => {
     await captureOutputAsync(() =>
-      cmdInit([root], { provider: "old", protocol: "openai-chat-completions", "base-url": "https://old.com", yes: true }),
+      cmdProvider(["add", root], { id: "old", protocol: "openai-chat-completions", "base-url": "https://old.com", yes: true }),
     );
-    const { code } = await captureOutputAsync(() =>
-      cmdInit([root], { provider: "new", protocol: "openai-chat-completions", "base-url": "https://new.com", force: true, yes: true }),
+    const { errLines, code } = await captureOutputAsync(() =>
+      cmdProvider(["add", root], { id: "new", protocol: "openai-chat-completions", "base-url": "https://new.com", force: true, yes: true }),
     );
     expect(code).toBe(0);
+    expect(errLines.some((l) => l.includes("will reset profile"))).toBe(true);
+    const p = loadProfile({ path: root, skipValidate: true });
+    expect(p.providers.map((x) => x.config.id)).toEqual(["new"]);
   });
 
   it("supports --dry-run (preview but no write)", async () => {
     const { lines, code } = await captureOutputAsync(() =>
-      cmdInit([root], { provider: "test", protocol: "openai-chat-completions", "base-url": "https://x.com", "dry-run": true }),
+      cmdProvider(["add", root], { id: "test", protocol: "openai-chat-completions", "base-url": "https://x.com", "dry-run": true }),
     );
     expect(code).toBe(0);
     expect(lines.some((l) => l.includes("dry-run"))).toBe(true);
@@ -607,7 +675,7 @@ describe("cmdProvider", () => {
     expect(errLines.some((l) => l.includes("does not exist"))).toBe(true);
   });
 
-  it("requires --id, --protocol, --base-url for add", async () => {
+  it("requires --id (or a known preset), --protocol, --base-url for add", async () => {
     const { errLines, code } = await captureOutputAsync(() =>
       cmdProvider(["add", root], { yes: true }),
     );
@@ -863,7 +931,9 @@ describe("maybeWrite", () => {
     let p = createProfile({ rootDir: root });
     p = upsertProvider(p, { id: "x", protocol: "openai-chat-completions", baseUrl: "https://x.com" });
     const { lines, code } = await captureOutputAsync(() => maybeWrite(p, {}));
-    expect(code).toBe(0);
+    // A non-empty plan without --yes now exits non-zero so CI does not mistake
+    // a skipped write for success.
+    expect(code).toBe(1);
     expect(lines.some((l) => l.includes("--yes"))).toBe(true);
     expect(fs.existsSync(root)).toBe(false);
   });
@@ -923,32 +993,187 @@ describe("parseToolSpec", () => {
 });
 
 // ---------------------------------------------------------------------------
-// --no-auth flow
+// Multi-value parsing helpers: parseHeaderSpec, parseKeyValueEquals,
+// parseProtocolBlock, resolveAllowUnauthenticated, buildProviderInput
 // ---------------------------------------------------------------------------
 
-describe("cmdInit --no-auth", () => {
+describe("parseHeaderSpec", () => {
+  it("splits at the first colon and trims both sides", () => {
+    expect(parseHeaderSpec("Authorization: Bearer abc")).toEqual(["Authorization", "Bearer abc"]);
+    expect(parseHeaderSpec("X-Api-Key:  sk-123")).toEqual(["X-Api-Key", "sk-123"]);
+  });
+  it("preserves colons inside the value (URLs)", () => {
+    expect(parseHeaderSpec("X-Target: https://x.com/v1")).toEqual(["X-Target", "https://x.com/v1"]);
+  });
+  it("throws when there is no colon", () => {
+    expect(() => parseHeaderSpec("no-colon-here")).toThrow();
+  });
+});
+
+describe("parseHeaderSpecs / parseKeyValueEquals", () => {
+  it("parseHeaderSpecs builds a header map", () => {
+    expect(parseHeaderSpecs(["A: 1", "B: 2"])).toEqual({ A: "1", B: "2" });
+  });
+  it("parseKeyValueEquals splits at first =", () => {
+    expect(parseKeyValueEquals(["a=1", "b=x=y"])).toEqual({ a: "1", b: "x=y" });
+  });
+  it("parseKeyValueEquals throws on a missing =", () => {
+    expect(() => parseKeyValueEquals(["no-eq"])).toThrow();
+  });
+});
+
+describe("parseProtocolBlock", () => {
+  it("returns an empty block when argv has no --protocol", () => {
+    const argv = ["--id", "x", "--yes"];
+    expect(parseProtocolBlock(argv)).toEqual({ protocols: [], remainingArgv: argv });
+  });
+  it("parses a single --protocol", () => {
+    expect(parseProtocolBlock(["--protocol", "openai-chat-completions", "--id", "x"])).toEqual({
+      protocols: [{ id: "openai-chat-completions" }],
+      remainingArgv: ["--id", "x"],
+    });
+  });
+  it("parses multiple --protocol entries with per-protocol base-url and header", () => {
+    const r = parseProtocolBlock([
+      "--protocol", "openai-responses",
+      "--protocol-base-url", "https://api.openai.com/v1",
+      "--protocol-header", "OpenAI-Beta: responses=v1",
+      "--protocol", "openai-chat-completions",
+    ]);
+    expect(r.remainingArgv).toEqual([]);
+    expect(r.protocols).toEqual([
+      { id: "openai-responses", baseUrl: "https://api.openai.com/v1", requestHeaders: { "OpenAI-Beta": "responses=v1" } },
+      { id: "openai-chat-completions" },
+    ]);
+  });
+  it("rejects --protocol-base-url without a preceding --protocol", () => {
+    expect(() => parseProtocolBlock(["--protocol-base-url", "https://x"])).toThrow(/preceding --protocol/);
+  });
+  it("rejects --protocol-header without a preceding --protocol", () => {
+    expect(() => parseProtocolBlock(["--protocol-header", "A: 1"])).toThrow(/preceding --protocol/);
+  });
+  it("rejects a --protocol-base-url ending with /", () => {
+    expect(() =>
+      parseProtocolBlock(["--protocol", "x", "--protocol-base-url", "https://x/"]),
+    ).toThrow(/must not end with/);
+  });
+  it("rejects --protocol with no value", () => {
+    expect(() => parseProtocolBlock(["--protocol"])).toThrow(/requires a value/);
+  });
+});
+
+describe("resolveAllowUnauthenticated", () => {
+  it("returns true when the provider has no auth block", () => {
+    const profile = loadProfile({ path: "does-not-matter", skipValidate: true });
+    // Build a minimal in-memory profile with a no-auth provider.
+    let p = createProfile({ rootDir: "/tmp/x/.lapp" });
+    p = upsertProvider(p, { id: "ollama", protocol: "openai-chat-completions", baseUrl: "http://x/v1" });
+    expect(resolveAllowUnauthenticated(p, "ollama")).toBe(true);
+  });
+  it("returns true when auth.type is none", () => {
+    let p = createProfile({ rootDir: "/tmp/x/.lapp" });
+    p = upsertProvider(p, { id: "ollama", protocol: "openai-chat-completions", baseUrl: "http://x/v1", auth: { type: "none" } });
+    expect(resolveAllowUnauthenticated(p, "ollama")).toBe(true);
+  });
+  it("returns false when the provider has a secret", () => {
+    let p = createProfile({ rootDir: "/tmp/x/.lapp" });
+    p = upsertProvider(p, { id: "openai", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "env://OPENAI_API_KEY" } });
+    expect(resolveAllowUnauthenticated(p, "openai")).toBe(false);
+  });
+  it("returns false for an unknown provider id", () => {
+    let p = createProfile({ rootDir: "/tmp/x/.lapp" });
+    p = upsertProvider(p, { id: "openai", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "env://K" } });
+    expect(resolveAllowUnauthenticated(p, "nope")).toBe(false);
+  });
+});
+
+describe("buildProviderInput — preset resolution", () => {
+  it("resolves the openai preset into a protocols array + env secret", () => {
+    const { input, defaultModel } = buildProviderInput("openai", {});
+    expect(input.id).toBe("openai");
+    expect(input.protocols?.map((p) => (typeof p === "string" ? p : p.id))).toEqual([
+      "openai-responses",
+      "openai-chat-completions",
+    ]);
+    expect(input.auth).toEqual({ secret: "env://OPENAI_API_KEY" });
+    expect(defaultModel).toBe("gpt-4o-mini");
+  });
+  it("resolves the ollama preset to auth type none", () => {
+    const { input } = buildProviderInput("ollama", {});
+    expect(input.auth).toEqual({ type: "none" });
+    expect(input.baseUrl).toBe("http://localhost:11434/v1");
+  });
+  it("an explicit --protocol block bypasses the preset", () => {
+    const { input } = buildProviderInput("openai", {
+      __protocols: [{ id: "openai-chat-completions", baseUrl: "https://api.openai.com/v1" }],
+    });
+    expect(input.protocols).toEqual([{ id: "openai-chat-completions", baseUrl: "https://api.openai.com/v1" }]);
+  });
+  it("falls back to legacy single --protocol + --base-url", () => {
+    const { input } = buildProviderInput("custom", {
+      protocol: "openai-chat-completions",
+      "base-url": "https://custom.example.com/v1",
+      secret: "env://CUSTOM_KEY",
+    });
+    expect(input.protocol).toBe("openai-chat-completions");
+    expect(input.baseUrl).toBe("https://custom.example.com/v1");
+    expect(input.auth).toEqual({ secret: "env://CUSTOM_KEY" });
+  });
+  it("throws on a non-preset id without protocol/base-url", () => {
+    expect(() => buildProviderInput("nonsense", {})).toThrow(/requires/);
+  });
+});
+
+describe("cmdProvider add — preset + multi-protocol on disk", () => {
   let root: string;
   beforeEach(() => { root = tmpLappRoot(); });
 
-  it("writes auth: { type: 'none' } when --no-auth is set", async () => {
+  it("provider add --id openai (preset) writes a protocols array and env secret", async () => {
     const { code } = await captureOutputAsync(() =>
-      cmdInit([root], {
-        provider: "ollama",
-        protocol: "openai-chat-completions",
-        "base-url": "http://localhost:11434/v1",
-        "no-auth": true,
+      cmdProvider(["add", root], { id: "openai", model: "gpt-4o", yes: true }),
+    );
+    expect(code).toBe(0);
+    const raw = fs.readFileSync(path.join(root, "providers", "openai", "provider.json"), "utf8");
+    const cfg = JSON.parse(raw);
+    expect(Array.isArray(cfg.protocols)).toBe(true);
+    expect(cfg.protocols.map((p: { id: string }) => p.id)).toEqual([
+      "openai-responses",
+      "openai-chat-completions",
+    ]);
+    expect(cfg.auth?.secret).toBe("env://OPENAI_API_KEY");
+    // --model created the model and set the chat default.
+    const g = JSON.parse(fs.readFileSync(path.join(root, "global.json"), "utf8"));
+    expect(g.defaultModel).toEqual({ providerId: "openai", model: "gpt-4o" });
+  });
+
+  it("provider add with a multi-protocol __protocols block writes both entries", async () => {
+    const { code } = await captureOutputAsync(() =>
+      cmdProvider(["add", root], {
+        id: "openai",
+        __protocols: [
+          { id: "openai-responses", requestHeaders: { "OpenAI-Beta": "responses=v1" } },
+          { id: "openai-chat-completions" },
+        ],
+        "base-url": "https://api.openai.com/v1",
+        secret: "env://OPENAI_API_KEY",
         yes: true,
       }),
     );
     expect(code).toBe(0);
-    const p = loadProfile({ path: root, skipValidate: true });
-    const cfg = p.providers[0]!.config;
-    expect(cfg.auth?.type).toBe("none");
-    expect(cfg.auth?.secret).toBeUndefined();
+    const cfg = JSON.parse(fs.readFileSync(path.join(root, "providers", "openai", "provider.json"), "utf8"));
+    // Each entry inherits the provider baseUrl unless it carries its own.
+    expect(cfg.protocols).toEqual([
+      { id: "openai-responses", baseUrl: "https://api.openai.com/v1", requestHeaders: { "OpenAI-Beta": "responses=v1" } },
+      { id: "openai-chat-completions", baseUrl: "https://api.openai.com/v1" },
+    ]);
   });
 });
 
-describe("cmdProvider --no-auth", () => {
+// ---------------------------------------------------------------------------
+// --no-auth flow
+// ---------------------------------------------------------------------------
+
+describe("cmdProvider add --no-auth", () => {
   let root: string;
   beforeEach(() => { root = tmpLappRoot(); });
 
@@ -969,7 +1194,8 @@ describe("cmdProvider --no-auth", () => {
 });
 
 // Round 4 regression: `lapp provider set --enabled false` must be honored
-// (previously silently ignored).
+// (previously silently ignored). Tests now go through parseFlags so the
+// argv form is exercised, not just a pre-built flags object.
 describe("cmdProvider --enabled / --disabled", () => {
   let root: string;
   beforeEach(() => {
@@ -981,12 +1207,30 @@ describe("cmdProvider --enabled / --disabled", () => {
     const p0 = loadProfile({ path: root, skipValidate: true });
     expect(p0.providers[0]!.config.enabled).not.toBe(false);
 
+    // Exercise through parseFlags to ensure --disabled is parsed correctly
+    const { flags } = parseFlags(["--yes", "--disabled"]);
     await captureOutputAsync(() =>
-      cmdProvider(["set", root], {
-        id: "ds", protocol: "openai-chat-completions", "base-url": "https://api.deepseek.com", disabled: true, yes: true,
-      }),
+      cmdProvider(["set", root], { ...flags, id: "ds", protocol: "openai-chat-completions", "base-url": "https://api.deepseek.com" }),
     );
     const p1 = loadProfile({ path: root, skipValidate: true });
     expect(p1.providers[0]!.config.enabled).toBe(false);
+  });
+
+  it("provider set --enabled false (space form) flips enabled:false", async () => {
+    const { flags } = parseFlags(["--yes", "--enabled", "false"]);
+    await captureOutputAsync(() =>
+      cmdProvider(["set", root], { ...flags, id: "ds", protocol: "openai-chat-completions", "base-url": "https://api.deepseek.com" }),
+    );
+    const p = loadProfile({ path: root, skipValidate: true });
+    expect(p.providers[0]!.config.enabled).toBe(false);
+  });
+
+  it("provider set --enabled=false (equals form) flips enabled:false", async () => {
+    const { flags } = parseFlags(["--yes", "--enabled=false"]);
+    await captureOutputAsync(() =>
+      cmdProvider(["set", root], { ...flags, id: "ds", protocol: "openai-chat-completions", "base-url": "https://api.deepseek.com" }),
+    );
+    const p = loadProfile({ path: root, skipValidate: true });
+    expect(p.providers[0]!.config.enabled).toBe(false);
   });
 });

@@ -69,7 +69,7 @@ Any protocol that posts to an OpenAI-compatible endpoint works against local ser
 }
 ```
 
-In the CLI, use `--no-auth` with `lapp init` or `lapp provider add`. See [local-providers.md](local-providers.md) for step-by-step examples.
+In the CLI, use `--no-auth` with `lapp provider add` (or the `ollama`/`lm-studio`/`vllm` presets, which set it for you). See [local-providers.md](local-providers.md) for step-by-step examples.
 
 ## Unsupported protocols
 
