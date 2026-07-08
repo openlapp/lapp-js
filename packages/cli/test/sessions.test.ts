@@ -122,13 +122,26 @@ describe("session CRUD", () => {
     const a = generateSessionId("a");
     const b = generateSessionId("b");
     saveSession(home, a, { role: "user", content: "a" }, { name: "a" });
-    // Small delay so timestamps differ
     saveSession(home, b, { role: "user", content: "b" }, { name: "b" });
 
     const sessions = listSessions(home);
     expect(sessions).toHaveLength(2);
     expect(sessions[0]!.name).toBe("b"); // newest first
     expect(sessions[1]!.name).toBe("a");
+  });
+
+  it("listSessions breaks same-timestamp ties by last saved", () => {
+    const a = generateSessionId("a");
+    const b = generateSessionId("b");
+    saveSession(home, a, { role: "user", content: "a" }, { name: "a" });
+    saveSession(home, b, { role: "user", content: "b" }, { name: "b" });
+
+    const indexPath = path.join(home, "sessions", "sessions.json");
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { sessions: SessionMeta[] };
+    for (const session of index.sessions) session.updatedAt = "2026-01-01T00:00:00.000Z";
+    fs.writeFileSync(indexPath, JSON.stringify(index), "utf8");
+
+    expect(listSessions(home)[0]!.name).toBe("b");
   });
 
   it("deleteSession removes JSONL and index entry", () => {

@@ -148,7 +148,8 @@ export function saveSession(
 
   // Update index
   const index = readIndex(home);
-  const existing = index.sessions.find((s) => s.id === id);
+  const existingIndex = index.sessions.findIndex((s) => s.id === id);
+  const existing = existingIndex === -1 ? undefined : index.sessions[existingIndex];
   const now = new Date().toISOString();
   const messageCount = (existing?.messageCount ?? 0) + 1;
 
@@ -163,11 +164,10 @@ export function saveSession(
     updatedAt: now,
   };
 
-  if (existing) {
-    Object.assign(existing, entry);
-  } else {
-    index.sessions.push(entry);
+  if (existingIndex !== -1) {
+    index.sessions.splice(existingIndex, 1);
   }
+  index.sessions.push(entry);
 
   writeIndex(home, index);
   return entry;
@@ -175,9 +175,13 @@ export function saveSession(
 
 /** List all sessions, newest first. */
 export function listSessions(home: string): SessionMeta[] {
-  return readIndex(home).sessions.sort(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-  );
+  return readIndex(home).sessions
+    .map((session, index) => ({ session, index }))
+    .sort((a, b) => (
+      new Date(b.session.updatedAt).getTime() - new Date(a.session.updatedAt).getTime()
+      || b.index - a.index
+    ))
+    .map(({ session }) => session);
 }
 
 /** Delete a session (JSONL + index entry). No-op if the session doesn't exist. */

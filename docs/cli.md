@@ -50,6 +50,9 @@ lapp env [path] --format bash|zsh|fish|powershell|cmd [--resolve] [--allow-plain
 lapp presets
 lapp ping [provider[/model]] [path]
 lapp chat [provider[/model]] <message> [path] [--provider <id> --model <id>] [--stream] [--tool <name:description:schema>] [--session <name> | --continue] [--system <prompt>] [--file <path>...] [--json] [--debug]
+lapp chat --list-sessions
+lapp chat --delete-session <name>
+lapp chat --delete-session-id <id>
 lapp doctor [path]
 lapp completions <bash|zsh|fish|powershell>
 ```
