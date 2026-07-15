@@ -29,7 +29,7 @@ unknown IDs or fills missing names, and never removes or overwrites local data.
 ## Canonical spec and schemas
 
 The canonical spec is pinned to commit
-`5b6b4bd47b1d16cbede43d821046fc89e87c9689`. This repository vendors the three
+`44619f9d86ab4beef4aef5ba2d74433cab595607`. This repository vendors the three
 v1 Schemas in `packages/lapp/schema/` so published packages remain
 self-contained. Both packages also vendor the canonical bilingual protocol
 specifications and bilingual user agreements. `spec-lock.json` stores that full

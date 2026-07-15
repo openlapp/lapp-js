@@ -1,3 +1,13 @@
+# Canonical, byte-locked protocol artifacts use LF on every platform.
+packages/lapp/schema/*.schema.json text eol=lf
+packages/lapp/spec.en.md text eol=lf
+packages/lapp/spec.zh-CN.md text eol=lf
+packages/cli/spec.en.md text eol=lf
+packages/cli/spec.zh-CN.md text eol=lf
+spec-lock.json text eol=lf
+
 # Canonical agreements intentionally use Markdown's two-space hard line break.
-packages/lapp/USER_AGREEMENT.*.md whitespace=-trailing-space
-packages/cli/USER_AGREEMENT.*.md whitespace=-trailing-space
+packages/lapp/USER_AGREEMENT.en.md text eol=lf whitespace=-trailing-space
+packages/lapp/USER_AGREEMENT.zh-CN.md text eol=lf whitespace=-trailing-space
+packages/cli/USER_AGREEMENT.en.md text eol=lf whitespace=-trailing-space
+packages/cli/USER_AGREEMENT.zh-CN.md text eol=lf whitespace=-trailing-space

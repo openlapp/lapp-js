@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: openlapp/lapp
-          ref: 5b6b4bd47b1d16cbede43d821046fc89e87c9689
+          ref: 44619f9d86ab4beef4aef5ba2d74433cab595607
           path: lapp
       - uses: pnpm/action-setup@v4
         with:
@@ -94,7 +94,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: openlapp/lapp
-          ref: 5b6b4bd47b1d16cbede43d821046fc89e87c9689
+          ref: 44619f9d86ab4beef4aef5ba2d74433cab595607
           path: lapp
       - uses: pnpm/action-setup@v4
         with:

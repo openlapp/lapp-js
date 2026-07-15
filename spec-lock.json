@@ -1,7 +1,7 @@
 {
   "version": 1,
   "source": "https://github.com/openlapp/lapp",
-  "canonicalCommit": "5b6b4bd47b1d16cbede43d821046fc89e87c9689",
+  "canonicalCommit": "44619f9d86ab4beef4aef5ba2d74433cab595607",
   "lappSchemaVersion": "1.0",
   "schemas": {
     "global.schema.json": "4aa6d5f9676ee7f7a88ae733adb0ac778c3fa6f7f955ec58936f125a61b1a661",
