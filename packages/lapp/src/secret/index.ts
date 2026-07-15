@@ -1,130 +1,165 @@
-/**
- * Secret parsing and resolution.
- *
- * v1 supports runtime resolution only for:
- *   - plaintext secret strings
- *   - `env://NAME`
- *
- * `keychain://` and `file://` are parsed as references but runtime resolution
- * returns `UnsupportedSecretSchemeError`. Unknown URI schemes are parsed but
- * also unsupported for resolution.
- *
- * Default behavior (per design §4):
- *   - never print full secrets unless explicitly requested
- *   - require an explicit SDK option to resolve secret values
- */
-
 import process from "node:process";
 import {
+  CredentialError,
   MissingEnvSecretError,
-  UnsupportedSecretSchemeError,
+  type AuthConfig,
+  type CredentialBinding,
+  type CredentialResolver,
+  type CredentialStatus,
+  type CredentialVault,
+  type ResolvedAuth,
   type SecretRef,
-  type SecretScheme,
 } from "../types.js";
+import {
+  openSystemCredentialVault,
+  parseVaultSecretRef,
+} from "./vault.js";
 
-const SECRET_SCHEMES = new Set<SecretScheme>(["env", "keychain", "file"]);
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** Parse a secret string into a typed reference. */
 export function parseSecretRef(raw: string): SecretRef {
-  if (typeof raw !== "string" || raw.trim() === "") {
-    return { raw: "", scheme: "plaintext", plaintext: true };
+  if (raw.startsWith("env:")) {
+    return {
+      raw,
+      scheme: "env",
+      ...(raw.startsWith("env://") ? { reference: raw.slice(6) } : {}),
+      plaintext: false,
+    };
   }
-
-  const match = raw.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
-  if (!match) {
-    return { raw, scheme: "plaintext", plaintext: true };
+  if (raw.startsWith("vault:")) {
+    return {
+      raw,
+      scheme: "vault",
+      ...(raw.startsWith("vault://") ? { reference: raw.slice(8) } : {}),
+      plaintext: false,
+    };
   }
-
-  const scheme = match[1]!.toLowerCase() as SecretScheme;
-  // Only classify as a non-plaintext ref if the scheme is one we recognize.
-  // A plaintext key that happens to contain "://" (e.g. "sk-abc://xyz",
-  // "https://internal-vault/…") must NOT be misrouted to the unsupported
-  // branch; treat unknown schemes as plaintext so the value can still be used
-  // (and so redactSecret can still display the redacted form).
-  if (!SECRET_SCHEMES.has(scheme)) {
-    return { raw, scheme: "plaintext", plaintext: true };
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(raw)) {
+    return { raw, scheme: "unknown", reference: raw.slice(raw.indexOf("://") + 3), plaintext: false };
   }
-  const reference = raw.slice(match[0].length);
-  return { raw, scheme, reference, plaintext: false };
+  return { raw, scheme: "plaintext", plaintext: true };
 }
 
-/** Redact a secret for display. */
 export function redactSecret(raw: string | undefined): string {
-  if (typeof raw !== "string" || raw === "") return "<unset>";
+  if (!raw) return "<unset>";
   const ref = parseSecretRef(raw);
   if (ref.scheme === "env" && ref.reference) return `env://${ref.reference}`;
-  if (ref.scheme === "keychain" && ref.reference) return `keychain://${ref.reference}`;
-  if (ref.scheme === "file" && ref.reference) return `file://<redacted>`;
-  // Plaintext (including plaintext values that contain "://") — never reveal.
+  if (ref.scheme === "vault") {
+    try {
+      const parsed = parseVaultSecretRef(raw);
+      return `vault://${parsed.providerId}/${parsed.credentialId}`;
+    } catch {
+      return "vault://<invalid>";
+    }
+  }
   return "<redacted>";
 }
 
-export interface ResolveSecretOptions {
-  /** Resolve `env://NAME` by reading `process.env`. Required to actually resolve. */
-  resolve?: boolean;
-  /** Custom env source (for tests); defaults to `process.env`. */
+export interface CredentialResolverOptions {
   env?: Record<string, string | undefined>;
+  vault?: CredentialVault;
 }
 
-export type ResolveResult =
-  | { ok: true; value: string; scheme: SecretScheme }
-  | { ok: false; reason: "unsupported" | "missing" | "unset"; scheme: SecretScheme; error: Error };
+/** Create a scheme-aware resolver. vault:// is opened lazily and never falls back. */
+export function createCredentialResolver(
+  options: CredentialResolverOptions = {},
+): CredentialResolver {
+  let systemVault: Promise<CredentialVault> | undefined;
+  const vault = (): Promise<CredentialVault> => {
+    if (options.vault) return Promise.resolve(options.vault);
+    systemVault ??= openSystemCredentialVault();
+    return systemVault;
+  };
 
-/**
- * Resolve a secret value. Never reads `process.env` unless `resolve: true`.
- *
- * Returns a discriminated result instead of throwing when the secret is simply
- * missing or unsupported, so callers (e.g. `testConnection`) can report cleanly.
- */
-export function resolveSecret(
-  raw: string | undefined,
-  options: ResolveSecretOptions = {},
-): ResolveResult {
-  if (typeof raw !== "string" || raw.trim() === "") {
-    return {
-      ok: false,
-      reason: "unset",
-      scheme: "plaintext",
-      error: new Error("auth.secret is missing or empty"),
-    };
-  }
-
-  const ref = parseSecretRef(raw);
-
-  if (ref.scheme === "plaintext") {
-    return { ok: true, value: raw, scheme: "plaintext" };
-  }
-
-  if (ref.scheme === "env") {
-    if (!options.resolve) {
-      return {
-        ok: false,
-        reason: "unsupported",
-        scheme: "env",
-        error: new Error("env:// resolution requires explicit `resolve: true`"),
-      };
-    }
-    const env = options.env ?? process.env;
-    const name = ref.reference ?? "";
-    const value = env[name];
-    if (value === undefined || value === "") {
-      return {
-        ok: false,
-        reason: "missing",
-        scheme: "env",
-        error: new MissingEnvSecretError(name),
-      };
-    }
-    return { ok: true, value, scheme: "env" };
-  }
-
-  // keychain://, file://, unknown — parsed but unsupported for runtime resolution.
   return {
-    ok: false,
-    reason: "unsupported",
-    scheme: ref.scheme,
-    error: new UnsupportedSecretSchemeError(ref.scheme),
+    async resolve(raw: string, binding: CredentialBinding): Promise<string> {
+      const ref = parseSecretRef(raw);
+      if (ref.scheme === "plaintext") {
+        if (raw.length === 0 || /[\r\n]/.test(raw)) {
+          throw new CredentialError("INVALID_SECRET_REFERENCE", "invalid plaintext credential");
+        }
+        return raw;
+      }
+      if (ref.scheme === "env") {
+        if (!ref.reference || !ENV_NAME.test(ref.reference)) {
+          throw new CredentialError("INVALID_SECRET_REFERENCE", "invalid env credential reference");
+        }
+        const value = (options.env ?? process.env)[ref.reference];
+        if (!value) throw new MissingEnvSecretError(ref.reference);
+        return value;
+      }
+      if (ref.scheme === "vault") {
+        parseVaultSecretRef(raw);
+        return (await vault()).resolve(raw, binding);
+      }
+      throw new CredentialError("UNSUPPORTED_SECRET_SCHEME", "unsupported credential scheme");
+    },
+
+    async status(raw: string, binding: CredentialBinding): Promise<CredentialStatus> {
+      const ref = parseSecretRef(raw);
+      if (ref.scheme === "plaintext") {
+        if (raw.length === 0 || /[\r\n]/.test(raw)) {
+          throw new CredentialError("INVALID_SECRET_REFERENCE", "invalid plaintext credential");
+        }
+        return { scheme: "plaintext", available: true };
+      }
+      if (ref.scheme === "env") {
+        if (!ref.reference || !ENV_NAME.test(ref.reference)) {
+          throw new CredentialError("INVALID_SECRET_REFERENCE", "invalid env credential reference");
+        }
+        return {
+          scheme: "env",
+          available: Boolean((options.env ?? process.env)[ref.reference]),
+        };
+      }
+      if (ref.scheme === "vault") {
+        parseVaultSecretRef(raw);
+        const status = await (await vault()).status(raw, binding);
+        return {
+          scheme: "vault",
+          available: status.exists && status.bindingMatches === true,
+          ...(status.exists ? { bindingMatches: status.bindingMatches === true } : {}),
+        };
+      }
+      throw new CredentialError("UNSUPPORTED_SECRET_SCHEME", "unsupported credential scheme");
+    },
   };
 }
 
-export { UnsupportedSecretSchemeError, MissingEnvSecretError } from "../types.js";
+export interface ResolveSecretOptions extends CredentialResolverOptions {
+  binding: CredentialBinding;
+  resolver?: CredentialResolver;
+}
+
+/** Resolve plaintext, env://NAME, or vault://provider/credential. */
+export async function resolveSecret(raw: string, options: ResolveSecretOptions): Promise<string> {
+  return (options.resolver ?? createCredentialResolver(options)).resolve(raw, options.binding);
+}
+
+/** Resolve a validated auth config without mutating it. */
+export async function resolveAuthConfig(
+  auth: AuthConfig,
+  binding: CredentialBinding | undefined,
+  options: CredentialResolverOptions & { resolver?: CredentialResolver } = {},
+): Promise<ResolvedAuth> {
+  if (auth.type === "none") return { type: "none" };
+  if (!binding) {
+    throw new CredentialError("INVALID_SECRET_REFERENCE", "credential binding is missing");
+  }
+  const secret = await resolveSecret(auth.secret, { ...options, binding });
+  if (auth.type === "bearer") return { type: "bearer", secret };
+  return { type: auth.type, name: auth.name, secret };
+}
+
+export {
+  LAPP_VAULT_SERVICE,
+  VAULT_SECRET_PATTERN,
+  assertCredentialRequestOrigin,
+  credentialBindingForProvider,
+  credentialBindingsEqual,
+  formatVaultSecretRef,
+  normalizeCredentialOrigin,
+  openSystemCredentialVault,
+  parseVaultSecretRef,
+  type VaultReference,
+} from "./vault.js";

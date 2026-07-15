@@ -1,97 +1,91 @@
-# 本地提供者
+# 本地 Provider
 
-`lapp-js` 支持任何 OpenAI 兼容的本地服务器。本指南覆盖 Ollama、LM Studio 和 vLLM。
+LAPP 可以连接实现已声明协议的本地服务。内置预设通过 OpenAI-compatible 地址支持
+Ollama、LM Studio 和 vLLM。
 
-## 为什么需要 `allowUnauthenticated`？
-
-本地服务器通常不需要 API key。`allowUnauthenticated: true` 告诉 SDK 跳过认证头。其他解析错误仍会快速失败。
-
-CLI 中使用 `--no-auth` 创建或添加提供者。
+Loopback 地址允许使用 HTTP。只有本地服务确实不需要凭据时，才使用
+`{ "type": "none" }` 认证。
 
 ## Ollama
 
-添加指向 Ollama 的 OpenAI 兼容端点的提供者（`ollama` 预设补好协议和地址，`--no-auth` 隐含）：
+启动 Ollama，然后注册并刷新模型：
 
 ```bash
 lapp provider add --id ollama --yes
+lapp models refresh --provider ollama
+lapp models refresh --provider ollama --apply --yes
+lapp models list --provider ollama
 ```
 
-或完全显式：
+显式选择返回的模型：
 
 ```bash
-lapp provider add --id ollama \
-  --protocol openai-chat-completions \
-  --base-url http://localhost:11434/v1 \
-  --no-auth --yes
+lapp default set --task chat --provider ollama --model <返回的-id> --yes
+lapp chat "你好，Ollama" --default chat
 ```
 
-一步拉取模型列表并把首个 chat 模型设为默认：
-
-```bash
-lapp models sync --provider ollama --apply --set-default --yes
-```
-
-聊天（`lapp chat`/`lapp ping` 对免认证提供者自动放行）：
-
-```bash
-lapp chat "你好，Ollama。"
-lapp chat ollama/llama3 "你好，Ollama。"
-```
-
-Ollama 返回 `name` 字段，除 `id` 外 `name` 也被接受。
-
-## LM Studio
-
-LM Studio 的 OpenAI 兼容服务器通常运行在 `1234` 端口。用 `lm-studio` 预设：
-
-```bash
-lapp provider add --id lm-studio --yes
-lapp models sync --provider lm-studio --apply --set-default --yes
-```
-
-或完全显式（已知模型 id 时）：
+等价的完整 Provider 命令为：
 
 ```bash
 lapp provider add \
-  --id lm-studio \
+  --id ollama \
   --protocol openai-chat-completions \
-  --base-url http://localhost:1234/v1 \
-  --no-auth --model local-model --yes
+  --base-url http://localhost:11434/v1 \
+  --no-auth \
+  --models-protocol openai-models \
+  --models-url http://localhost:11434/v1/models \
+  --yes
 ```
+
+## LM Studio
+
+启用本地 API 服务后运行：
+
+```bash
+lapp provider add --id lm-studio --yes
+lapp models refresh --provider lm-studio --apply --yes
+lapp models list --provider lm-studio
+lapp default set --task chat --provider lm-studio --model <返回的-id> --yes
+```
+
+预设地址为 `http://localhost:1234/v1`。
 
 ## vLLM
 
-vLLM 的 OpenAI 兼容服务器通常运行在 `8000` 端口。用 `vllm` 预设：
+vLLM 在常用端口监听时运行：
 
 ```bash
 lapp provider add --id vllm --yes
-lapp models sync --provider vllm --apply --set-default --yes
+lapp models refresh --provider vllm --apply --yes
+lapp models list --provider vllm
+lapp default set --task chat --provider vllm --model <返回的-id> --yes
 ```
 
-## SDK 示例
+预设地址为 `http://localhost:8000/v1`。
+
+## SDK 调用
+
+不需要额外的“允许无认证”开关。`auth.type: "none"` 就是完整策略：
 
 ```ts
-import { loadProfile, createLappClient } from "@openlapp/lapp";
+import { createLappClient, loadProfile } from "@openlapp/lapp";
 
 const profile = loadProfile();
 const client = createLappClient({
   profile,
   provider: "ollama",
-  model: "llama3",
-  allowUnauthenticated: true,
+  model: "<返回的-id>",
 });
 
-const resp = await client.chat({
-  messages: [{ role: "user", content: "你好！" }],
+const response = await client.chat({
+  messages: [{ role: "user", content: "你好" }],
 });
-console.log(resp.text);
 ```
 
-## 注意事项
+## 故障排除
 
-- 即使启用 `allowUnauthenticated`，其他解析错误仍会快速失败。
-- `lapp chat` 和 `lapp ping` 对 `auth.type: "none"` / 无密钥的提供者自动放行，本地流程无需额外参数。
-- CLI 的 `lapp models sync` 会自动传入 `allowUnauthenticated: true`，本地提供者无需额外参数。
-- 本地模型同步时的能力推断是尽力而为的。如果提供者未 advertise 能力，可手动编辑 `models.json` 补充。
-
-协议详情见 [protocols.md](protocols.md)，安全建议见 [security.md](security.md)。
+- 刷新要求 `provider.json` 配置 `modelDiscovery`；预设会自动配置。
+- 发现 URL 必须与 `baseUrl` 同源。
+- 合法的远端空列表不会造成变化。
+- 已有本地模型和元数据永远不会被删除或覆盖。
+- 如果服务返回的能力信息不完整，直接编辑权威 `models.json` 条目。

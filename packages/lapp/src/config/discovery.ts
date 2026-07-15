@@ -1,312 +1,214 @@
-/**
- * LAPP path discovery and profile loading.
- *
- * Read order follows `../lapp/implementation.en.md`:
- *   1. Resolve root: explicit `path` > `LAPP_HOME` > `~/.lapp`.
- *   2. Scan `providers/<id>/provider.json` (or `.jsonc`).
- *   3. Keep providers with `enabled: false` in the profile (the client and
- *      env-export skip them at resolution time); emit an INFO diagnostic.
- *      Preserved so writes round-trip the on-disk file.
- *   4. Load `models.json`/`.jsonc` when present.
- *   5. Load `global.json`/`.jsonc` when present.
- *   6. Load `manifest.json`/`.jsonc` when present.
- */
-
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { findConfigFile, readJsonc, relativeLocation } from "./jsonc.js";
-import { validateProfile } from "../validate/index.js";
 import { redactSecret, parseSecretRef } from "../secret/index.js";
-import { CORE_PROTOCOLS, isObject } from "../validate/constants.js";
-import { getProviderProtocols, getPrimaryProtocolId } from "../protocols.js";
-import type {
-  Diagnostic,
-  GlobalConfig,
-  LappProfile,
-  LappProvider,
-  ManifestConfig,
-  ModelsConfig,
-  ProfileSummary,
-  ProviderConfig,
-  SecretSummary,
+import {
+  ProfileValidationError,
+  type Diagnostic,
+  type GlobalConfig,
+  type LappProfile,
+  type LappProvider,
+  type ModelsConfig,
+  type ProfileInspection,
+  type ProviderConfig,
 } from "../types.js";
+import { validateProfile } from "../validate/index.js";
+import { isObject } from "../validate/constants.js";
+import { attachProfileRoot } from "../profile-location.js";
 
 export interface LoadProfileOptions {
-  /** Explicit `.lapp` root directory. Overrides `LAPP_HOME` and `~/.lapp`. */
   path?: string;
-  /** Skip validation diagnostics (only parse). */
-  skipValidate?: boolean;
 }
 
-/**
- * Resolve the LAPP root directory.
- * Order: explicit path > `LAPP_HOME` env > `~/.lapp`.
- */
 export function resolveLappRoot(explicit?: string): string {
   if (explicit) return path.resolve(explicit);
   if (process.env.LAPP_HOME) return path.resolve(process.env.LAPP_HOME);
   return path.join(os.homedir(), ".lapp");
 }
 
-function loadManifest(root: string, diagnostics: Diagnostic[]): ManifestConfig | undefined {
-  const file = findConfigFile(root, "manifest");
-  if (!file) return undefined;
+function relative(root: string, file: string): string {
+  return path.relative(root, file).split(path.sep).join("/") || ".";
+}
+
+function parseJson(file: string, root: string, diagnostics: Diagnostic[]): unknown {
   try {
-    const data = readJsonc(file) as unknown;
-    if (!isObject(data)) {
-      diagnostics.push({
-        level: "ERROR",
-        location: relativeLocation(root, file),
-        message: "manifest must be a JSON object",
-      });
-      return undefined;
-    }
-    return data as unknown as ManifestConfig;
-  } catch (err) {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
     diagnostics.push({
       level: "ERROR",
-      location: relativeLocation(root, file),
-      message: `invalid JSON/JSONC in manifest: ${(err as Error).message}`,
+      location: relative(root, file),
+      message: `invalid JSON: ${(error as Error).message}`,
     });
     return undefined;
   }
 }
 
-function loadGlobal(root: string, diagnostics: Diagnostic[]): GlobalConfig | undefined {
-  const file = findConfigFile(root, "global");
-  if (!file) return undefined;
-  try {
-    const data = readJsonc(file) as unknown;
-    if (!isObject(data)) {
-      diagnostics.push({
-        level: "ERROR",
-        location: relativeLocation(root, file),
-        message: "global must be a JSON object",
-      });
-      return undefined;
-    }
-    return data as unknown as GlobalConfig;
-  } catch (err) {
-    diagnostics.push({
-      level: "ERROR",
-      location: relativeLocation(root, file),
-      message: `invalid JSON/JSONC in global: ${(err as Error).message}`,
-    });
-    return undefined;
-  }
+interface ReadResult {
+  rootDir: string;
+  profile: LappProfile;
+  diagnostics: Diagnostic[];
 }
 
-function loadProvider(
-  providerDir: string,
-  root: string,
-  diagnostics: Diagnostic[],
-): LappProvider | null {
-  const dirName = path.basename(providerDir);
-  const providerFile = findConfigFile(providerDir, "provider");
-  if (!providerFile) {
-    diagnostics.push({
-      level: "ERROR",
-      location: `providers/${dirName}`,
-      message: "missing provider.json or provider.jsonc",
-    });
-    return null;
-  }
-
-  let config: ProviderConfig;
-  try {
-    const data = readJsonc(providerFile) as unknown;
-    if (!isObject(data)) {
-      throw new Error("provider must be a JSON object");
-    }
-    config = data as unknown as ProviderConfig;
-  } catch (err) {
-    diagnostics.push({
-      level: "ERROR",
-      location: relativeLocation(root, providerFile),
-      message: `invalid JSON/JSONC in provider.json: ${(err as Error).message}`,
-    });
-    return null;
-  }
-
-  config.__file = providerFile;
-  config.__dirName = dirName;
-  if (typeof config.protocol !== "string" || config.protocol.trim() === "") {
-    config.protocol = getPrimaryProtocolId(config);
-  }
-
-  if (typeof config.id === "string" && config.id !== dirName) {
-    diagnostics.push({
-      level: "WARN",
-      location: relativeLocation(root, providerFile),
-      message: `provider id "${config.id}" does not match directory "${dirName}"`,
-    });
-  }
-
-  for (const protocol of getProviderProtocols(config)) {
-    if (CORE_PROTOCOLS.has(protocol.id)) continue;
-    diagnostics.push({
-      level: "WARN",
-      location: relativeLocation(root, providerFile),
-      message: `protocol "${protocol.id}" is not a core LAPP v1 protocol`,
-    });
-  }
-
-  if (typeof config.baseUrl === "string" && config.baseUrl.endsWith("/")) {
-    diagnostics.push({
-      level: "WARN",
-      location: relativeLocation(root, providerFile),
-      message: "baseUrl should not end with /",
-    });
-  }
-
-  // Load models.json/jsonc if present.
-  let models: ModelsConfig | null = null;
-  const modelsFile = findConfigFile(providerDir, "models");
-  if (modelsFile) {
-    try {
-      const data = readJsonc(modelsFile) as unknown;
-      if (!isObject(data) || !Array.isArray((data as Record<string, unknown>).models)) {
-        throw new Error("models must be an object with a models array");
-      }
-      models = data as unknown as ModelsConfig;
-    } catch (err) {
-      diagnostics.push({
-        level: "ERROR",
-        location: relativeLocation(root, modelsFile),
-        message: `invalid JSON/JSONC in models.json: ${(err as Error).message}`,
-      });
-    }
-  }
-
-  return { config, models, dir: providerDir };
-}
-
-/**
- * Load and normalize a LAPP profile from disk.
- */
-export function loadProfile(options: LoadProfileOptions = {}): LappProfile {
-  const root = resolveLappRoot(options.path);
+function readProfile(options: LoadProfileOptions): ReadResult {
+  const rootDir = resolveLappRoot(options.path);
   const diagnostics: Diagnostic[] = [];
-
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+  const profile: LappProfile = attachProfileRoot({ providers: [] }, rootDir);
+  if (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()) {
     diagnostics.push({ level: "ERROR", location: ".", message: "target directory does not exist" });
-    return { rootDir: root, providers: [], diagnostics };
+    return { rootDir, profile, diagnostics };
   }
 
-  const manifest = loadManifest(root, diagnostics);
-  const global = loadGlobal(root, diagnostics);
+  const globalJsonc = path.join(rootDir, "global.jsonc");
+  if (fs.existsSync(globalJsonc)) {
+    diagnostics.push({ level: "ERROR", location: "global.jsonc", message: "JSONC is not supported in LAPP v1" });
+  }
+  const globalFile = path.join(rootDir, "global.json");
+  if (fs.existsSync(globalFile)) {
+    const raw = parseJson(globalFile, rootDir, diagnostics);
+    if (isObject(raw)) profile.global = raw as unknown as GlobalConfig;
+    else if (raw !== undefined) {
+      diagnostics.push({ level: "ERROR", location: "global.json", message: "global.json must contain an object" });
+    }
+  }
 
-  const providers: LappProvider[] = [];
-  const providersDir = path.join(root, "providers");
+  const providersDir = path.join(rootDir, "providers");
   if (!fs.existsSync(providersDir) || !fs.statSync(providersDir).isDirectory()) {
-    diagnostics.push({ level: "ERROR", location: "providers", message: "missing providers/ directory" });
-  } else {
-    const entries = fs.readdirSync(providersDir, { withFileTypes: true });
-    const providerDirs = entries
-      .filter((e) => {
-        // Skip hidden directories (`.tmp-XXXX` leftovers, `.bak`, etc.)
-        // and non-directories; the writers use dot-prefixed temp files
-        // but those should never appear as subdirectories.
-        if (!e.isDirectory()) return false;
-        if (e.name.startsWith(".")) return false;
-        return true;
-      })
-      .map((e) => path.join(providersDir, e.name))
-      .sort((a, b) => a.localeCompare(b));
-    for (const dir of providerDirs) {
-      // Cheap pre-check: skip dirs that have no provider.json/jsonc so a
-      // user-created notes/ or scratch/ subdir doesn't emit a missing-
-      // provider.json ERROR on every load. The full check is repeated
-      // inside loadProvider for a definitive answer.
-      if (!findConfigFile(dir, "provider")) continue;
-      const loaded = loadProvider(dir, root, diagnostics);
-      if (loaded) {
-        // Disabled providers are kept in the profile so a later write can
-        // round-trip them (preserving files on disk). The client SDK skips
-        // disabled providers when resolving targets.
-        if (loaded.config.enabled === false) {
-          diagnostics.push({
-            level: "INFO",
-            location: relativeLocation(root, loaded.config.__file!),
-            message: `provider "${loaded.config.id}" is disabled`,
-          });
-        }
-        providers.push(loaded);
-      }
-    }
+    diagnostics.push({ level: "ERROR", location: "providers", message: "missing providers directory" });
+    return { rootDir, profile, diagnostics };
   }
 
-  const profile: LappProfile = { rootDir: root, manifest, global, providers, diagnostics };
-
-  if (!options.skipValidate) {
-    const result = validateProfile(profile);
-    // Merge validator diagnostics (dedupe by level+location+message). The
-    // dedup key is intentionally narrow: it covers the common case where
-    // load-time (e.g. "missing provider.json") and validate-time (e.g.
-    // "missing required field 'id'") would otherwise emit duplicates for
-    // the same file. A rare shifted-index re-emit can still be lost, but
-    // adding a richer discriminator would leak implementation details
-    // into the public `Diagnostic` type — accept the small loss in v1.
-    for (const d of result.diagnostics) {
-      if (!diagnostics.some((x) => x.level === d.level && x.location === d.location && x.message === d.message)) {
-        diagnostics.push(d);
-      }
+  const entries = fs.readdirSync(providersDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const providerDir = path.join(providersDir, entry.name);
+    const providerFile = path.join(providerDir, "provider.json");
+    const providerJsonc = path.join(providerDir, "provider.jsonc");
+    const modelsFile = path.join(providerDir, "models.json");
+    const modelsJsonc = path.join(providerDir, "models.jsonc");
+    if (fs.existsSync(providerJsonc) || fs.existsSync(modelsJsonc)) {
+      diagnostics.push({
+        level: "ERROR",
+        location: `providers/${entry.name}`,
+        message: "JSONC is not supported in LAPP v1",
+      });
     }
-  }
+    if (!fs.existsSync(providerFile)) {
+      diagnostics.push({
+        level: "ERROR",
+        location: `providers/${entry.name}`,
+        message: "missing provider.json",
+      });
+      continue;
+    }
+    const providerRaw = parseJson(providerFile, rootDir, diagnostics);
+    if (!isObject(providerRaw)) {
+      if (providerRaw !== undefined) {
+        diagnostics.push({
+          level: "ERROR",
+          location: relative(rootDir, providerFile),
+          message: "provider.json must contain an object",
+        });
+      }
+      continue;
+    }
+    if (typeof providerRaw.id === "string" && providerRaw.id !== entry.name) {
+      diagnostics.push({
+        level: "ERROR",
+        location: relative(rootDir, providerFile),
+        message: `provider id "${providerRaw.id}" does not match directory "${entry.name}"`,
+      });
+    }
 
-  return profile;
+    let models: ModelsConfig = { schemaVersion: "1.0", models: [] };
+    if (fs.existsSync(modelsFile)) {
+      const modelsRaw = parseJson(modelsFile, rootDir, diagnostics);
+      if (isObject(modelsRaw)) models = modelsRaw as unknown as ModelsConfig;
+      else if (modelsRaw !== undefined) {
+        diagnostics.push({
+          level: "ERROR",
+          location: relative(rootDir, modelsFile),
+          message: "models.json must contain an object",
+        });
+      }
+    } else {
+      diagnostics.push({
+        level: "ERROR",
+        location: `providers/${entry.name}`,
+        message: "missing models.json",
+      });
+    }
+    profile.providers.push({
+      config: providerRaw as unknown as ProviderConfig,
+      models,
+    });
+  }
+  return { rootDir, profile, diagnostics };
 }
 
-/**
- * Summarize a profile for inspection. Secrets are redacted by default; pass
- * `revealSecrets: true` only in trusted paths.
- */
-export function inspectProfile(
-  profile: LappProfile,
-  options: { revealSecrets?: boolean } = {},
-): ProfileSummary {
-  return {
-    rootDir: profile.rootDir,
-    global: profile.global,
-    diagnostics: profile.diagnostics,
-    providers: profile.providers.map((p) => {
-      const secretRaw = p.config.auth?.secret;
-      const ref = typeof secretRaw === "string" ? parseSecretRef(secretRaw) : null;
-      const summary: SecretSummary = ref
-        ? {
-            scheme: ref.scheme,
-            redacted: options.revealSecrets ? (secretRaw as string) : redactSecret(secretRaw as string),
-            resolvable: ref.scheme === "plaintext" || ref.scheme === "env",
-            plaintextWarning: ref.plaintext,
-          }
-        : {
-            // No secret configured; revealSecrets has nothing to reveal here.
-            scheme: "plaintext",
-            redacted: "<unset>",
-            resolvable: false,
-            plaintextWarning: false,
-          };
+function mergeDiagnostics(...groups: Diagnostic[][]): Diagnostic[] {
+  const seen = new Set<string>();
+  return groups.flat().filter((entry) => {
+    const key = `${entry.level}\0${entry.location ?? ""}\0${entry.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
-      return {
-        id: p.config.id,
-        name: p.config.name,
-        enabled: p.config.enabled !== false,
-        protocol: getPrimaryProtocolId(p.config),
-        protocols: getProviderProtocols(p.config),
-        baseUrl: p.config.baseUrl,
-        coreProtocol: CORE_PROTOCOLS.has(getPrimaryProtocolId(p.config)),
-        secret: summary,
-        modelCount: p.models?.models.length ?? 0,
-        models: (p.models?.models ?? []).map((m) => ({
-          id: m.id,
-          name: m.name,
-          aliases: m.aliases,
-          type: m.type,
-          enabled: m.enabled !== false,
-        })),
-      };
-    }),
+export function loadProfile(options: LoadProfileOptions = {}): LappProfile {
+  const read = readProfile(options);
+  const validation = validateProfile(read.profile);
+  const diagnostics = mergeDiagnostics(read.diagnostics, validation.diagnostics);
+  if (diagnostics.some((entry) => entry.level === "ERROR")) {
+    throw new ProfileValidationError(diagnostics);
+  }
+  return read.profile;
+}
+
+function providerInspection(provider: LappProvider): ProfileInspection["providers"][number] {
+  const rawAuth = isObject(provider.config.auth) ? provider.config.auth : undefined;
+  const secret = rawAuth && "secret" in rawAuth && typeof rawAuth.secret === "string"
+    ? rawAuth.secret
+    : undefined;
+  const ref = parseSecretRef(secret ?? "");
+  const models = Array.isArray(provider.models.models) ? provider.models.models : [];
+  return {
+    id: typeof provider.config.id === "string" ? provider.config.id : "<invalid>",
+    ...(typeof provider.config.name === "string" ? { name: provider.config.name } : {}),
+    enabled: provider.config.enabled !== false,
+    protocols: Array.isArray(provider.config.protocols)
+      ? provider.config.protocols.filter((value): value is string => typeof value === "string")
+      : [],
+    ...(typeof provider.config.baseUrl === "string" ? { baseUrl: provider.config.baseUrl } : {}),
+    secret: {
+      scheme: ref.scheme,
+      redacted: redactSecret(secret),
+      resolvable: Boolean(secret)
+        && (ref.scheme === "plaintext" || ref.scheme === "env" || ref.scheme === "vault"),
+      plaintextWarning: Boolean(secret) && ref.plaintext,
+    },
+    modelCount: models.length,
+    models: models.filter(isObject).map((model) => ({
+      id: typeof model.id === "string" ? model.id : "<invalid>",
+      ...(typeof model.name === "string" ? { name: model.name } : {}),
+      ...(Array.isArray(model.aliases)
+        ? { aliases: model.aliases.filter((value): value is string => typeof value === "string") }
+        : {}),
+      ...(typeof model.type === "string" ? { type: model.type } : {}),
+      enabled: model.enabled !== false,
+    })),
+  };
+}
+
+export function inspectProfile(options: LoadProfileOptions = {}): ProfileInspection {
+  const read = readProfile(options);
+  const validation = validateProfile(read.profile);
+  return {
+    rootDir: read.rootDir,
+    providers: read.profile.providers.map(providerInspection),
+    ...(read.profile.global ? { global: read.profile.global } : {}),
+    diagnostics: mergeDiagnostics(read.diagnostics, validation.diagnostics),
   };
 }

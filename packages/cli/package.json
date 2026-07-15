@@ -13,6 +13,11 @@
   },
   "files": [
     "dist",
+    "LICENSE",
+    "USER_AGREEMENT.en.md",
+    "USER_AGREEMENT.zh-CN.md",
+    "spec.en.md",
+    "spec.zh-CN.md",
     "README.md"
   ],
   "repository": {
@@ -26,13 +31,13 @@
   },
   "scripts": {
     "build": "tsc --emitDeclarationOnly && tsup",
-    "clean": "rimraf dist"
+    "lint": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
     "@openlapp/lapp": "workspace:*"
   },
   "devDependencies": {
-    "rimraf": "^6.0.1",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0"
   }

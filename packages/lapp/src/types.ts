@@ -1,162 +1,90 @@
-/**
- * Core types for LAPP profiles.
- *
- * These values mirror the JSON Schemas in `../lapp/schema/*.schema.json` and
- * the field semantics in `../lapp/spec.en.md`. Unknown fields are intentionally
- * preserved (extra fields map into `metadata`) rather than dropped, because the
- * LAPP spec requires applications to tolerate unknown fields for forward
- * compatibility.
- */
+/** Public LAPP v1 profile and SDK types. */
 
-export type Protocol = string;
+export type SchemaVersion = "1.0";
 
-export type ProtocolEntry =
-  | Protocol
-  | {
-      id: Protocol;
-      baseUrl?: string;
-      requestHeaders?: Record<string, string>;
-      capabilities?: string[];
-      [extra: string]: unknown;
-    };
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type Extensions = Record<string, JsonValue>;
 
-export interface ResolvedProtocolEntry {
-  id: Protocol;
-  baseUrl?: string;
-  requestHeaders?: Record<string, string>;
-  capabilities?: string[];
-  [extra: string]: unknown;
-}
+export type AuthConfig =
+  | { type: "none" }
+  | { type: "bearer"; secret: string }
+  | { type: "header"; name: string; secret: string }
+  | { type: "query"; name: string; secret: string };
 
-export type SecretScheme = "plaintext" | "env" | "keychain" | "file" | "unknown";
+export type ResolvedAuth = AuthConfig;
 
-/** A parsed secret reference. */
-export interface SecretRef {
-  /** Raw value as written in the profile. */
-  raw: string;
-  scheme: SecretScheme;
-  /** For `env://NAME`, `keychain://namespace/item`, `file://path`: the part after `://`. */
-  reference?: string;
-  /** True for plain strings (no `scheme://` prefix). */
-  plaintext: boolean;
-}
-
-export interface AuthConfig {
-  /** Optional auth type, e.g. `bearer`. Missing defaults to bearer. */
-  type?: string;
-  /** Secret string or reference (`plaintext`, `env://NAME`, `keychain://`, `file://`). */
-  secret?: string;
-  /** Optional custom header name carrying the credential. */
-  header?: string;
-  /** Optional query param name carrying the credential. */
-  queryParam?: string;
-  [extra: string]: unknown;
-}
-
-export interface LinkMap {
-  [name: string]: string;
+export interface ModelDiscoveryConfig {
+  protocol: "openai-models" | "anthropic-models";
+  url: string;
 }
 
 export interface ProviderConfig {
-  schemaVersion?: string;
+  schemaVersion: SchemaVersion;
   id: string;
   name?: string;
   enabled?: boolean;
-  /** Legacy single protocol string. New profiles should prefer `protocols`. */
-  protocol: Protocol;
-  /** Supported protocol adapters in preference order. */
-  protocols?: ProtocolEntry[];
   baseUrl: string;
-  links?: LinkMap;
-  auth?: AuthConfig;
+  protocols: string[];
+  auth: AuthConfig;
   requestHeaders?: Record<string, string>;
-  /** Absolute path of the source provider.json/jsonc file. */
-  __file?: string;
-  /** Directory name under `providers/`. */
-  __dirName?: string;
-  [extra: string]: unknown;
+  modelDiscovery?: ModelDiscoveryConfig;
+  extensions?: Extensions;
 }
 
 export interface ModelEntry {
   id: string;
-  source?: "provider" | "manual";
   name?: string;
   aliases?: string[];
+  enabled?: boolean;
+  protocols?: string[];
   type?: string;
   inputModalities?: string[];
   outputModalities?: string[];
   capabilities?: string[];
   contextWindow?: number;
   maxOutputTokens?: number;
-  enabled?: boolean;
-  protocol?: Protocol;
-  links?: LinkMap;
-  metadata?: Record<string, unknown>;
-  [extra: string]: unknown;
+  extensions?: Extensions;
 }
 
 export interface ModelsConfig {
-  schemaVersion?: string;
-  updatedAt?: string;
+  schemaVersion: SchemaVersion;
   models: ModelEntry[];
-  [extra: string]: unknown;
+  extensions?: Extensions;
 }
 
 export interface ModelRef {
   providerId: string;
-  /** Always a string; LAPP does not parse `/` inside model IDs. */
-  model: string;
-  [extra: string]: unknown;
+  modelId: string;
 }
 
 export interface GlobalConfig {
-  schemaVersion?: string;
-  defaultModel?: ModelRef;
-  defaultEmbeddingModel?: ModelRef;
-  defaultImageModel?: ModelRef;
-  defaultTextToSpeechModel?: ModelRef;
-  defaultVideoModel?: ModelRef;
-  [extra: string]: unknown;
+  schemaVersion: SchemaVersion;
+  defaults: Record<string, ModelRef>;
+  extensions?: Extensions;
 }
 
-export interface ManifestConfig {
-  schemaVersion?: string;
-  name?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  license?: string;
-  [extra: string]: unknown;
-}
-
-/** A fully-loaded LAPP profile, normalized from disk. */
+/** A validated, normalized LAPP profile. */
 export interface LappProfile {
-  /** Absolute root directory of the `.lapp` tree. */
-  rootDir: string;
-  manifest?: ManifestConfig;
   global?: GlobalConfig;
   providers: LappProvider[];
-  /** Diagnostics collected during read (warnings about non-core protocols, etc.). */
-  diagnostics: Diagnostic[];
 }
 
 export interface LappProvider {
   config: ProviderConfig;
-  /** Null when the provider has no models.json/jsonc. */
-  models: ModelsConfig | null;
-  /** Absolute directory path under `providers/`. */
-  dir: string;
+  models: ModelsConfig;
 }
 
 export type DiagnosticLevel = "ERROR" | "WARN" | "INFO";
 
 export interface Diagnostic {
   level: DiagnosticLevel;
-  /** File-relative location, e.g. `providers/deepseek/provider.json#auth`. */
+  /** Stable machine-readable code when the diagnostic defines one. */
+  code?: string;
   location?: string;
   message: string;
 }
 
-/** Result of validation. */
 export interface ValidationResult {
   valid: boolean;
   diagnostics: Diagnostic[];
@@ -165,17 +93,30 @@ export interface ValidationResult {
   infos: number;
 }
 
-/** Lightweight summary for inspection, secrets redacted by default. */
-export interface ProfileSummary {
+export type SecretScheme = "plaintext" | "env" | "vault" | "unknown";
+
+export interface SecretRef {
+  raw: string;
+  scheme: SecretScheme;
+  reference?: string;
+  plaintext: boolean;
+}
+
+export interface SecretSummary {
+  scheme: SecretScheme;
+  redacted: string;
+  resolvable: boolean;
+  plaintextWarning: boolean;
+}
+
+export interface ProfileInspection {
   rootDir: string;
   providers: Array<{
     id: string;
     name?: string;
     enabled: boolean;
-    protocol: Protocol;
-    protocols: ResolvedProtocolEntry[];
-    baseUrl: string;
-    coreProtocol: boolean;
+    protocols: string[];
+    baseUrl?: string;
     secret: SecretSummary;
     modelCount: number;
     models: Array<{
@@ -190,17 +131,6 @@ export interface ProfileSummary {
   diagnostics: Diagnostic[];
 }
 
-export interface SecretSummary {
-  scheme: SecretScheme;
-  /** Redacted placeholder; never the resolved secret. */
-  redacted: string;
-  /** True when the scheme is supported for runtime resolution in v1. */
-  resolvable: boolean;
-  /** Whether the secret is a plain string (warned about by the validator). */
-  plaintextWarning: boolean;
-}
-
-/** File-level change plan produced by `planChanges`. */
 export interface ChangePlan {
   changes: Array<
     | { kind: "create"; path: string }
@@ -209,40 +139,180 @@ export interface ChangePlan {
   >;
 }
 
-/** Error thrown when a runtime secret scheme is not supported for resolution. */
-export class UnsupportedSecretSchemeError extends Error {
-  override name = "UnsupportedSecretSchemeError";
-  constructor(public scheme: SecretScheme, message?: string) {
-    super(message ?? `unsupported secret scheme: ${scheme}`);
-    this.name = "UnsupportedSecretSchemeError";
+export type ModelSelector =
+  | { providerId: string; model: string }
+  | { default: string };
+
+export interface ModelDescriptor {
+  providerId: string;
+  providerName?: string;
+  providerEnabled: boolean;
+  modelId: string;
+  modelName?: string;
+  modelEnabled: boolean;
+  protocols: string[];
+  baseUrl: string;
+  aliases?: string[];
+  type?: string;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  capabilities?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  extensions?: Extensions;
+}
+
+export type CredentialAuthBinding =
+  | { type: "bearer" }
+  | { type: "header"; name: string }
+  | { type: "query"; name: string };
+
+/** Security-relevant provider properties bound into a Vault record. */
+export interface CredentialBinding {
+  providerId: string;
+  /** Normalized URL origin, without a path, query, fragment, or credentials. */
+  origin: string;
+  auth: CredentialAuthBinding;
+}
+
+export interface VaultEnvelopeV1 {
+  version: 1;
+  providerId: string;
+  credentialId: string;
+  origin: string;
+  auth: CredentialAuthBinding;
+  secret: string;
+}
+
+export type CredentialErrorCode =
+  | "INVALID_SECRET_REFERENCE"
+  | "UNSUPPORTED_SECRET_SCHEME"
+  | "ENV_SECRET_MISSING"
+  | "VAULT_BACKEND_UNAVAILABLE"
+  | "VAULT_CREDENTIAL_NOT_FOUND"
+  | "VAULT_CREDENTIAL_EXISTS"
+  | "VAULT_RECORD_INVALID"
+  | "VAULT_BINDING_MISMATCH"
+  | "VAULT_ACCESS_DENIED"
+  | "VAULT_OPERATION_FAILED"
+  | "CREDENTIAL_UPDATE_PARTIAL_FAILURE";
+
+/** A deliberately redacted credential failure. Native error text is never exposed. */
+export class CredentialError extends Error {
+  override name = "CredentialError";
+  constructor(
+    public readonly code: CredentialErrorCode,
+    message: string,
+  ) {
+    super(message);
   }
 }
 
-/** Error thrown when a protocol adapter is not supported. */
-export class UnsupportedProtocolError extends Error {
-  override name = "UnsupportedProtocolError";
-  constructor(public protocol: string, message?: string) {
-    super(message ?? `unsupported protocol: ${protocol}`);
-    this.name = "UnsupportedProtocolError";
+export interface VaultCredentialStatus {
+  reference: string;
+  exists: boolean;
+  bindingMatches?: boolean;
+}
+
+export interface CredentialStatus {
+  scheme: Exclude<SecretScheme, "unknown">;
+  available: boolean;
+  bindingMatches?: boolean;
+}
+
+export interface VaultPutOptions {
+  overwrite?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface CredentialVault {
+  put(
+    reference: string,
+    secret: string,
+    binding: CredentialBinding,
+    options?: VaultPutOptions,
+  ): Promise<void>;
+  resolve(
+    reference: string,
+    expectedBinding: CredentialBinding,
+    options?: { signal?: AbortSignal },
+  ): Promise<string>;
+  status(
+    reference: string,
+    expectedBinding: CredentialBinding,
+    options?: { signal?: AbortSignal },
+  ): Promise<VaultCredentialStatus>;
+  delete(reference: string, options?: { signal?: AbortSignal }): Promise<boolean>;
+}
+
+export interface CredentialResolver {
+  resolve(raw: string, binding: CredentialBinding): Promise<string>;
+  status(raw: string, binding: CredentialBinding): Promise<CredentialStatus>;
+}
+
+/** Target selection result that has not resolved a credential. */
+export interface ConnectionPlan {
+  providerId: string;
+  modelId: string;
+  protocol: string;
+  baseUrl: string;
+  requestHeaders: Record<string, string>;
+  auth: AuthConfig;
+  credentialBinding?: CredentialBinding;
+}
+
+export interface ResolvedConnection {
+  providerId: string;
+  modelId: string;
+  protocol: string;
+  baseUrl: string;
+  requestHeaders: Record<string, string>;
+  auth: ResolvedAuth;
+}
+
+export class ProfileValidationError extends Error {
+  override name = "ProfileValidationError";
+  constructor(public readonly diagnostics: Diagnostic[], message = "invalid LAPP profile") {
+    super(message);
   }
 }
 
-/** Error thrown when resolving `env://NAME` and the variable is missing. */
-export class MissingEnvSecretError extends Error {
+export class MissingEnvSecretError extends CredentialError {
   override name = "MissingEnvSecretError";
-  readonly envName: string;
-  constructor(envName: string, message?: string) {
-    super(message ?? `missing environment variable: ${envName}`);
-    this.name = "MissingEnvSecretError";
-    this.envName = envName;
+  constructor(public readonly envName: string, message?: string) {
+    super("ENV_SECRET_MISSING", message ?? `missing environment variable: ${envName}`);
   }
 }
 
-/** Error thrown when target resolution cannot find a provider/model. */
+export type TargetResolutionErrorCode =
+  | "PROVIDER_NOT_FOUND"
+  | "PROVIDER_DISABLED"
+  | "MODEL_NOT_FOUND"
+  | "MODEL_DISABLED"
+  | "MODEL_AMBIGUOUS"
+  | "DEFAULT_NOT_FOUND"
+  | "PROTOCOL_NOT_SUPPORTED";
+
 export class TargetResolutionError extends Error {
   override name = "TargetResolutionError";
-  constructor(message: string) {
+  constructor(
+    message: string,
+    public readonly code: TargetResolutionErrorCode = "MODEL_NOT_FOUND",
+  ) {
     super(message);
-    this.name = "TargetResolutionError";
+  }
+}
+
+export class ModelRefreshError extends Error {
+  override name = "ModelRefreshError";
+  constructor(
+    message: string,
+    public readonly code:
+      | "DISCOVERY_NOT_CONFIGURED"
+      | "INVALID_RESPONSE"
+      | "HTTP_ERROR"
+      | "PAGINATION_ERROR" = "INVALID_RESPONSE",
+  ) {
+    super(message);
   }
 }

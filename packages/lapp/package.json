@@ -4,6 +4,7 @@
   "description": "TypeScript SDK for LAPP (Local AI Provider Profiles): read, validate, write, manage, and send requests to configured providers.",
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,6 +20,11 @@
   },
   "files": [
     "dist",
+    "LICENSE",
+    "USER_AGREEMENT.en.md",
+    "USER_AGREEMENT.zh-CN.md",
+    "spec.en.md",
+    "spec.zh-CN.md",
     "schema",
     "README.md"
   ],
@@ -32,17 +38,16 @@
     "access": "public"
   },
   "scripts": {
-    "copy-schema": "node ../../scripts/copy-schema.mjs",
-    "prebuild": "pnpm run copy-schema",
     "build": "tsup && tsc --emitDeclarationOnly",
-    "clean": "rimraf dist schema/*.schema.json"
+    "lint": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
+    "@napi-rs/keyring": "^1.3.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
-    "rimraf": "^6.0.1",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0"
   }

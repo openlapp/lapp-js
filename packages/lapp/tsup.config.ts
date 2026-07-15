@@ -9,4 +9,5 @@ export default defineConfig({
   target: "es2022",
   platform: "node",
   shims: true,
+  external: ["@napi-rs/keyring"],
 });

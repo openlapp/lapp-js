@@ -1,260 +1,292 @@
 # SDK 指南
 
-`@openlapp/lapp` 是 LAPP 的 TypeScript SDK。它可以读取、验证、编写、管理 `.lapp` 配置，并直接向配置的提供者发送请求。
-
-## 安装
+`@openlapp/lapp` 是 LAPP v1 本地 Registry 的 TypeScript 实现。它可以加载、验证、
+查询、刷新、编辑和写入 Profile。应用可以把解析后的连接交给自己的上游库，也可以
+使用内置直连客户端。
 
 ```bash
 npm install @openlapp/lapp
 ```
 
-需要 Node 18.18 或更高版本。
+需要 Node.js 18.18 或更高版本。
 
-## 核心模型
-
-```text
-.lapp 配置
-  -> @openlapp/lapp SDK
-  -> 协议适配器
-  -> 提供者 API
-```
-
-SDK 是核心产品；CLI 只是它的第一个消费者。所有配置逻辑都应放在 SDK 中。
-
-## 加载配置
-
-### `loadProfile(options?)`
-
-读取并验证 `.lapp` 目录。解析顺序：显式 `path` 选项 → `LAPP_HOME` 环境变量 → `~/.lapp`。
+## 加载与检查
 
 ```ts
-import { loadProfile } from "@openlapp/lapp";
+import { inspectProfile, loadProfile } from "@openlapp/lapp";
 
-const profile = loadProfile();                          // 默认
-const profile = loadProfile({ path: "/etc/lapp" });     // 显式路径
-const profile = loadProfile({ skipValidate: true });    // 仅解析，不验证
+const profile = loadProfile();
+const other = loadProfile({ path: "/etc/lapp" });
+const inspection = inspectProfile();
 ```
 
-`loadProfile` 返回归一化后的 `LappProfile`。`enabled: false` 的提供者会被保留，以便写回时还原磁盘文件。没有 `models.json` 的提供者其 `models` 为 `null`。
+路径解析顺序为显式 `path`、`LAPP_HOME`、`~/.lapp`。
 
-### `resolveLappRoot(explicit?)`
+`loadProfile()` 只返回通过验证、标准化的 `LappProfile`；输入非法时抛出
+`ProfileValidationError`。返回值保留禁用项，但不包含诊断或源文件元数据。
 
-在不加载配置的情况下解析根目录。
+`inspectProfile({ path? })` 用于处理损坏 Profile。它返回部分 Provider 信息和
+脱敏诊断，不暴露密钥值。
+
+使用 `validateProfile(profile)` 验证内存 Profile；使用
+`resolveLappRoot(explicit?)` 只解析根目录而不加载文件。
+
+## 列出模型
 
 ```ts
-const root = resolveLappRoot();
+import { listModels } from "@openlapp/lapp";
+
+const enabled = listModels(profile);
+const openai = listModels(profile, { providerId: "openai" });
+const all = listModels(profile, { includeDisabled: true });
 ```
 
-### `inspectProfile(profile, { revealSecrets? })`
+`listModels()` 是同步纯函数：不执行文件/网络 I/O，也不解析凭据。每个
+`ModelDescriptor` 包含 Provider/模型 ID、继承或模型专属协议、地址、启用状态和
+本地描述元数据。
 
-人类可读的摘要：脱敏的密钥、每个提供者的模型列表、诊断信息。
+## 选择并解析连接
 
-```ts
-const summary = inspectProfile(profile);
-```
-
-`revealSecrets: true` 仅在可信环境中使用。
-
-### `validateProfile(profile)`
-
-同时执行 JSON Schema（ajv）和语义检查（重复别名、全局默认引用是否存在、密钥方案警告、敏感头警告）。返回 `{ valid, diagnostics, errors, warnings, infos }`。
+只需要目标元数据、不应接触凭据时，使用同步纯函数：
 
 ```ts
-const result = validateProfile(profile);
-```
+import { resolveConnection, selectConnection } from "@openlapp/lapp";
 
-## 管理配置（纯函数、不可变）
-
-所有变更函数都返回新的 `LappProfile`，不会修改磁盘。
-
-| 函数 | 用途 |
-|------|------|
-| `createProfile(input)` | 创建内存中的空配置（不写磁盘）。 |
-| `upsertProvider(profile, input)` | 插入或更新提供者；未指定的字段会被保留。 |
-| `upsertModel(profile, input)` | 在提供者下插入或更新模型。 |
-| `removeProvider(profile, id)` | 移除提供者，并清除指向它的默认引用。 |
-| `removeModel(profile, { providerId, model })` | 按 id 或别名移除模型，并清除指向它的默认设置。 |
-| `replaceProviderModels(profile, id, models)` | 替换某个提供者的整个 `models.json`（同步流程）。 |
-| `setDefaultModelRef(profile, key, target)` | 设置任意默认槽位（`defaultModel`、`defaultEmbeddingModel` 等）。 |
-| `setDefaultModel(profile, target)` | 设置 `defaultModel`（聊天槽位）的便捷包装。 |
-| `isSupportedProtocol(protocol)` | 是否为 3 个 v1 核心协议之一。 |
-
-示例：
-
-```ts
-let profile = createProfile({ rootDir: "~/.lapp" });
-profile = upsertProvider(profile, {
-  id: "openai",
-  protocol: "openai-chat-completions",
-  baseUrl: "https://api.openai.com/v1",
-  auth: { secret: "env://OPENAI_API_KEY" },
-});
-profile = upsertModel(profile, {
-  providerId: "openai",
-  id: "gpt-4o",
-  type: "chat",
-  aliases: ["gpt4o"],
-});
-profile = setDefaultModel(profile, { providerId: "openai", model: "gpt-4o" });
-```
-
-## 计划与写入
-
-### `planChanges(before, after)`
-
-计算文件级别的增/改/删差异。
-
-```ts
-const plan = planChanges(before, after);
-```
-
-### `writeProfileAtomic(profile, { before? })`
-
-先在内存中验证，然后原子写入：
-
-1. 在内存中构建完整内容。
-2. 写入前验证。
-3. 写到目标文件同目录的隐藏临时文件。
-4. 关闭临时文件。
-5. 通过重命名覆盖目标文件。
-6. 失败时仅删除临时文件。
-
-没有备份、没有回滚、没有临时目录。传入 `options.before` 可以在写入成功后清理已移除提供者的孤儿 `provider.json`/`models.json`。
-
-```ts
-await writeProfileAtomic(profile, { before });
-```
-
-新文件以 `.json` 写入；已有的 `.jsonc` 文件会作为 `.json` 目标处理。
-
-## 密钥
-
-| 函数 | 用途 |
-|------|------|
-| `parseSecretRef(raw)` | 解析 `plaintext` / `env://NAME` / `keychain://` / `file://` 字符串。 |
-| `redactSecret(raw)` | 对密钥进行安全展示脱敏。 |
-| `resolveSecret(ref, { resolve, env })` | 返回解析后的值或错误。**显式 opt-in**；除非 `resolve: true`，否则不会读取 `process.env`。 |
-
-v1 支持：`plaintext` 和 `env://`。`keychain://` 和 `file://` 会被解析，但运行时抛出 `UnsupportedSecretSchemeError`。
-
-```ts
-const ref = parseSecretRef("env://OPENAI_API_KEY");
-const value = resolveSecret(ref, { resolve: true });
-```
-
-完整策略见 [security.md](security.md)。
-
-## 客户端
-
-### `createLappClient(options)`
-
-解析目标并返回绑定到对应协议适配器的客户端。
-
-```ts
-const client = createLappClient({
+const plan = selectConnection(
   profile,
-  resolveSecrets: true,  // 真正调用提供者时必须
-  env: { OPENAI_API_KEY: "sk-..." },  // 可选覆盖
-});
+  { providerId: "openai", model: "fast-chat" }, // ID 或 alias
+  { supportedProtocols: ["openai-responses", "openai-chat-completions"] },
+);
+
+const selected = selectConnection(profile, { default: "chat" });
 ```
 
-目标解析优先级：
+`selectConnection()` 返回带有未解析 `auth` 和凭据绑定的 `ConnectionPlan`，
+不执行文件、环境变量、Vault 或网络 I/O。
 
-1. 显式的 `provider` / `model` 选项。
-2. `global.defaultModel`（仅在兼容时）。
-3. 第一个启用提供者的第一个启用模型。
+可信调用方需要可用认证时，再异步解析：
 
-选项：
+```ts
+const explicit = await resolveConnection(
+  profile,
+  { providerId: "openai", model: "fast-chat" },
+  {
+    env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
+    vault: testVault,
+  },
+);
 
-- `provider`、`model` — 显式目标
-- `resolveSecrets` — 显式 opt-in 解析密钥
-- `allowUnauthenticated` — 跳过认证头，用于本地/自托管提供者
-- `env` — 环境变量覆盖
-- `fetchImpl` — 自定义 `fetch` 实现
+const resolvedDefault = await resolveConnection(profile, { default: "chat" });
+```
 
-### 客户端方法
-
-| 方法 | 返回 | 说明 |
-|------|------|------|
-| `client.chat(input)` | `Promise<LappResponse>` | 非流式。如果 `input.stream: true` 会抛出错误（请用 `stream()`）。 |
-| `client.rawChat(input)` | `Promise<unknown>` | 返回提供者原生响应。 |
-| `client.stream(input)` | `AsyncIterable<LappStreamEventUnion>` | `delta` / `tool-call` / `usage` / `finish` / `error`。 |
-| `client.executeWithTools(input, tools, handlers, options?)` | `Promise<{ text, turns, messages }>` | 多轮工具调用循环。 |
-| `client.testConnection()` | `Promise<TestConnectionResult>` | 发送 1 token 探测请求。 |
-| `client.providerId` / `client.model` / `client.protocol` | `string` | 解析后的目标。 |
-
-### `LappResponse`
+返回值为：
 
 ```ts
 {
-  text: string;
-  provider: string;
-  model: string;
+  providerId: string;
+  modelId: string;             // canonical ID
   protocol: string;
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
-  finishReason?: string;
-  toolCalls?: ParsedToolCall[];
-  raw: unknown;  // 完整的提供者原始响应，未改动
+  baseUrl: string;
+  requestHeaders: Record<string, string>;
+  auth:
+    | { type: "none" }
+    | { type: "bearer"; secret: string }
+    | { type: "header"; name: string; secret: string }
+    | { type: "query"; name: string; secret: string };
 }
 ```
 
-### 流式输出
+选项是 `{ supportedProtocols?, env?, vault?, resolver? }`。传入 `env` 可使用
+显式来源替代 `process.env`；传入 `vault` 可注入 `CredentialVault`；传入
+`resolver` 会替代前两者并具有最高优先级。只有遇到 `vault://` 引用时才会延迟
+打开系统 Vault。
+
+凭据在内存中解析，返回的连接必须视为敏感数据。禁用或歧义目标、缺失默认值或
+凭据、Vault 后端不可用、绑定不符、协议不匹配都会抛出类型化错误。凭据 scheme
+之间绝不相互回退。
+
+## 使用凭据 Vault
 
 ```ts
-for await (const ev of client.stream({ messages })) {
-  if (ev.kind === "delta") process.stdout.write(ev.text);
-  if (ev.kind === "tool-call") console.log("tool:", ev.name, ev.arguments);
-  if (ev.kind === "usage") console.log("usage:", ev.inputTokens, ev.outputTokens);
-  if (ev.kind === "finish") console.log("finish:", ev.reason);
-  if (ev.kind === "error") console.error("error:", ev.message);
-}
+import {
+  createCredentialResolver,
+  openSystemCredentialVault,
+} from "@openlapp/lapp";
+
+const vault = await openSystemCredentialVault();
+const resolver = createCredentialResolver({ vault });
 ```
 
-## 配置查询
+`openSystemCredentialVault()` 打开当前 OS 用户原生凭据库的适配器。它不会创建
+加密文件，也绝不回退到环境变量或明文。缺少原生模块会让此调用失败；系统凭据
+服务不可用可能在第一次操作时失败。两者都会使用
+`CredentialError.code === "VAULT_BACKEND_UNAVAILABLE"`。
 
-### `listModels(profile, options?)`
+Vault 引用的固定形式是 `vault://<providerId>/<credentialId>`。系统记录使用
+service `dev.lapp.vault.v1` 和 account `<providerId>/<credentialId>`。
 
-将配置展平为每个模型一条记录。
+`CredentialVault` 提供：
 
 ```ts
-const models = listModels(profile, { providerId: "openai" });
-// [{ providerId, modelId, protocol, baseUrl, type, capabilities, ... }, ...]
+await vault.put(reference, secret, binding, { overwrite: false });
+const secret = await vault.resolve(reference, binding);
+const status = await vault.status(reference, binding);
+const deleted = await vault.delete(reference);
 ```
 
-选项：`providerId`、`includeDisabled`、`includeDisabledModels`。
+存储的 envelope 严格绑定 Provider ID、标准化精确 origin（不含 base URL 路径）和
+认证 type/name。Header 名转为小写；query 参数名保持大小写敏感。任何绑定字段
+改变后，解析都会以 `VAULT_BINDING_MISMATCH` 失败；应重新录入凭据，不能静默
+重新绑定。
 
-## 模型同步
+`createCredentialResolver({ env?, vault? })` 处理明文、`env://NAME` 和
+`vault://provider/credential`。`resolve(raw, binding)` 返回可用密钥；
+`status(raw, binding)` 在不暴露密钥的前提下报告 scheme、可用性，以及已有 Vault
+记录的绑定状态。它延迟打开系统 Vault，也不缓存明文。
+
+Vault 保护的是静态存储，不是应用沙箱：同一 OS 用户下的兼容应用在成功解析后
+可以得到明文密钥。
+
+## 刷新模型
+
+```ts
+import { refreshModels, writeProfileAtomic } from "@openlapp/lapp";
+
+const abortController = new AbortController();
+const result = await refreshModels(profile, "openai", {
+  env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
+  vault,
+  signal: abortController.signal,
+});
+
+console.log(result.added, result.diagnostics);
+await writeProfileAtomic(result.nextProfile, { before: profile });
+```
+
+`refreshModels()` 请求一个 Provider 的已配置发现 URL，并返回
+`{ nextProfile, added, diagnostics }`。它绝不自行写盘。合并只会补充缺失显示名称，
+并按 ID 排序追加未知模型；永不覆盖或删除已有模型。非法 HTTP/JSON/分页会抛出
+`ModelRefreshError`，输入保持不变。
+
+凭据选项是 `{ env?, vault?, resolver? }`，其优先级和禁止回退规则与
+`resolveConnection()` 相同。测试可以注入 `options.fetch`。`options.signal` 会
+传递到每个发现请求；携带凭据的请求拒绝重定向。
+
+## 管理和写入 Profile
+
+管理函数都是不可变函数：
 
 | 函数 | 用途 |
 |------|------|
-| `fetchProviderModels(profile, providerId, options?)` | 从提供者的 `/models` 端点获取模型列表。Anthropic 没有 `links.models` 时抛出 `ModelSyncUnsupportedError`。 |
-| `buildModelSyncResult(before, fetched, protocol)` | 计算 `{ models, added, removed, updated }` 差异。 |
-| `syncProviderModels(profile, providerId, options?)` | 一次完成获取 + 差异计算。 |
-| `applySyncedModels(before, result)` | 合并到 `ModelsConfig`，保留用户编辑的字段。结果会标记 `__lappUpdatedAtSource: "sync"`，以便写入时重新生成 `updatedAt`。 |
+| `createProfile({ rootDir })` | 创建空的内存 Profile。 |
+| `upsertProvider(profile, input)` | 添加或 patch Provider；保留未提供字段。 |
+| `upsertProviderWithCredential(profile, input, options?)` | 添加或 patch Provider，并应用 SDK 的凭据存储默认值。 |
+| `upsertModel(profile, input)` | 添加或 patch 模型；保留未提供字段。 |
+| `removeProvider(profile, id)` | 删除未被引用的 Provider。 |
+| `removeModel(profile, target)` | 按 ID 或 alias 删除未被引用的模型。 |
+| `setDefault(profile, task, target)` | 保存 canonical 任务默认值。 |
 
-## 环境变量导出
+使用 `planChanges(before, after)` 预览文件变化；使用
+`writeProfileAtomic(after, { before })` 验证并写入标准 JSON。写入会拒绝路径逃逸和
+非法 Profile。v1 假定同一时刻只有一个写者。
 
-### `exportEnv(profile, { format, resolve?, allowPlaintext? })`
-
-为配置中的密钥生成 shell 语句。
+新增原始凭据时，使用异步的受管写入接口：
 
 ```ts
-const out = exportEnv(profile, { format: "bash", resolve: true, allowPlaintext: false });
+import { upsertProviderWithCredential } from "@openlapp/lapp";
+
+const result = await upsertProviderWithCredential(profile, {
+  id: "openai",
+  baseUrl: "https://api.openai.com/v1",
+  protocols: ["openai-responses"],
+  auth: {
+    type: "bearer",
+    credential: { secret: userInput },
+  },
+  models: [],
+}, { vault });
+
+// Vault 已更新，但磁盘尚未写入。
+await writeProfileAtomic(result.profile, { before: profile });
 ```
 
-`resolve: true` 才能读取 `process.env`；`allowPlaintext: true` 才能包含明文密钥。
+省略 `credential.storage` 时默认写入 Vault，credential ID 默认为 `default`。
+SDK 从最终 Provider 配置推导绑定，调用方不能自行传入 origin。使用
+`{ storage: "env", name: "NAME" }` 只写入 `env://NAME` 引用而不读取环境变量。
+只有显式传入 `{ secret, storage: "plaintext" }` 才会把原始密钥放入 Profile，
+此时结果包含 `PLAINTEXT_SECRET_IN_USE` warning。
 
-## 错误类型
+`upsertProviderWithCredential()` 返回
+`{ profile, credentialRef?, warnings }`，绝不自行把 Profile 写入磁盘。已有
+`AuthConfig` 的调用方仍可使用底层同步 `upsertProvider()`；该函数不管理或解析凭据。
 
-| 错误 | 抛出时机 |
-|------|----------|
-| `TargetResolutionError` | 找不到提供者/模型、所有提供者被禁用、没有启用模型。 |
-| `UnsupportedProtocolError` | 提供者的协议不是 3 个 v1 核心协议之一。 |
-| `MissingEnvSecretError` | 使用 `env://NAME` 但 `process.env[NAME]` 未设置。 |
-| `UnsupportedSecretSchemeError` | 使用 `keychain://` 或 `file://` 方案（v1 限制）。 |
-| `ModelSyncUnsupportedError` | 对没有公开模型列表的协议执行同步。 |
-| `StreamingUnsupportedError` | 协议适配器没有 `parseStream`。 |
+## 直连客户端
 
-## TypeScript 定义
+```ts
+import { createLappClient } from "@openlapp/lapp";
 
-`dist/index.d.ts` 是类型的权威来源。符号索引见 [packages/lapp/docs/api.md](../../packages/lapp/docs/api.md)。
+const client = createLappClient({
+  profile,
+  provider: "openai",
+  model: "gpt-4o-mini",
+  vault,
+  // Provider 内容会写入终端或日志时启用。
+  redactSuccessfulSecrets: true,
+});
+
+const response = await client.chat({
+  messages: [{ role: "user", content: "你好" }],
+  maxTokens: 200,
+});
+```
+
+`provider` 和 `model` 必须同时提供；也可以都省略并使用 `default`（默认为
+`chat`）。工厂函数会同步选择并验证目标，但不会解析凭据。每次 Provider 操作都会
+在使用前即时解析当前凭据；client 不缓存已解析明文，因此 Vault 轮换会在下一次
+操作生效。发送认证信息前，client 会再次核对最终请求 origin，并使用
+`redirect: "error"`。
+
+CLI 始终启用 `redactSuccessfulSecrets`，防止上游回显 Vault 凭据并将其写入
+stdout。SDK 调用方也可以显式启用；它会在成功内容与凭据字面值相同时改写响应，
+所以 SDK 默认关闭。
+
+客户端方法：
+
+| 方法 | 结果 |
+|------|------|
+| `chat(input)` | 标准化 `LappResponse`。 |
+| `rawChat(input)` | Provider 原生响应。 |
+| `stream(input)` | 异步 `delta`、`tool-call`、`usage`、`finish`、`error` 事件。 |
+| `executeWithTools(input, tools, handlers, options?)` | 完整工具循环文本、轮次和 transcript。 |
+| `testConnection()` | 小型直连请求结果。 |
+
+`ChatInput.extra` 可以添加 Provider 原生字段，但不能覆盖目标、messages/input、
+stream、tools 或认证字段。`AbortSignal` 会传到底层请求。工具参数必须能解析为对象
+并通过工具 JSON Schema 后，handler 才会执行。
+
+## 错误
+
+公开类型化错误包括 `ProfileValidationError`、`TargetResolutionError`、
+`CredentialError`、`MissingEnvSecretError`、`ModelRefreshError` 和
+`StreamingUnsupportedError`。协议无交集时使用
+`TargetResolutionError.code === "PROTOCOL_NOT_SUPPORTED"`。
+
+应匹配稳定的 `CredentialError.code`，不要匹配已经脱敏的 message：
+
+```text
+INVALID_SECRET_REFERENCE
+UNSUPPORTED_SECRET_SCHEME
+ENV_SECRET_MISSING
+VAULT_BACKEND_UNAVAILABLE
+VAULT_CREDENTIAL_NOT_FOUND
+VAULT_CREDENTIAL_EXISTS
+VAULT_RECORD_INVALID
+VAULT_BINDING_MISMATCH
+VAULT_ACCESS_DENIED
+VAULT_OPERATION_FAILED
+CREDENTIAL_UPDATE_PARTIAL_FAILURE
+```
+
+这些公开错误绝不暴露原生 cause 或凭据值。
+
+完整导出索引见 [API 参考](../../packages/lapp/docs/api.md)。

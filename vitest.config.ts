@@ -1,6 +1,12 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@openlapp/lapp": fileURLToPath(new URL("./packages/lapp/src/index.ts", import.meta.url)),
+    },
+  },
   test: {
     include: ["packages/**/test/**/*.test.ts"],
     environment: "node",
@@ -12,11 +18,10 @@ export default defineConfig({
       exclude: ["packages/**/dist/**"],
       reporter: ["text", "text-summary", "html"],
       thresholds: {
-        // Informational only — no hard fail gate yet.
-        statements: 0,
-        branches: 0,
-        functions: 0,
-        lines: 0,
+        statements: 75,
+        branches: 65,
+        functions: 85,
+        lines: 75,
       },
     },
   },

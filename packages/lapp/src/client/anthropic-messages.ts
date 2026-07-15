@@ -1,7 +1,7 @@
 /**
  * Anthropic Messages adapter.
  *
- * POSTs `{baseUrl}/v1/messages` with `x-api-key` + `anthropic-version` headers.
+ * POSTs `{baseUrl}/v1/messages` with resolved auth + `anthropic-version`.
  * Maps system messages to the top-level `system` field, user/assistant/tool
  * messages to the `messages` array.
  */
@@ -15,40 +15,9 @@ import type {
   ParsedToolCall,
   ProtocolAdapter,
 } from "./adapter.js";
+import { assertSafeExtra, isRecord } from "./adapter.js";
 import { parseSse } from "./sse.js";
-import { buildAuthHeadersWith } from "./http.js";
-
-function joinUrl(base: string, suffix: string): string {
-  const trimmed = base.replace(/\/+$/, "");
-  const lastSeg = trimmed.split("/").pop() ?? "";
-  let normalizedSuffix = suffix;
-  if (lastSeg === "v1" && suffix.startsWith("/v1")) {
-    normalizedSuffix = suffix.replace(/^\/v1/, "");
-  }
-  return `${trimmed}${normalizedSuffix.startsWith("/") ? normalizedSuffix : `/${normalizedSuffix}`}`;
-}
-
-function buildHeaders(ctx: AdapterContext): Record<string, string> {
-  // Anthropic adds `anthropic-version` and has a slightly different auth
-  // header convention (default `x-api-key`, strip a stray "Bearer " prefix
-  // when a custom header is used). Delegate the auth-strip + content-type
-  // work to the shared helper, then override the auth key.
-  const headers = buildAuthHeadersWith(ctx, { "anthropic-version": "2023-06-01" });
-  if (!ctx.secret) return headers;
-  const header = (ctx.authHeader ?? "x-api-key").toLowerCase();
-  if (header === "authorization") {
-    headers["Authorization"] = ctx.secret.startsWith("Bearer ")
-      ? ctx.secret
-      : `Bearer ${ctx.secret}`;
-  } else {
-    // Strip a stray "Bearer " prefix — secrets may come pre-prefixed from a
-    // shared secret source (e.g. env var meant for Authorization).
-    headers[ctx.authHeader ?? "x-api-key"] = ctx.secret.startsWith("Bearer ")
-      ? ctx.secret.slice("Bearer ".length)
-      : ctx.secret;
-  }
-  return headers;
-}
+import { appendUrlPath, buildAuthHeadersWith } from "./http.js";
 
 function buildMessages(messages: ChatInput["messages"]): Array<{ role: string; content: unknown }> {
   return messages
@@ -92,6 +61,7 @@ function parseToolCalls(content: unknown): ParsedToolCall[] | undefined {
   if (!Array.isArray(content)) return undefined;
   const out: ParsedToolCall[] = [];
   for (const c of content) {
+    if (!isRecord(c)) throw new Error("invalid anthropic-messages response");
     if (c.type !== "tool_use") continue;
     let args: Record<string, unknown> = {};
     let parseError: string | undefined;
@@ -117,14 +87,18 @@ export const anthropicMessagesAdapter: ProtocolAdapter = {
   protocol: "anthropic-messages",
 
   buildRequest(input: ChatInput, ctx: AdapterContext): AdapterRequest {
+    assertSafeExtra(input.extra);
+    if (ctx.auth.type === "header" && ctx.auth.name.toLowerCase() === "anthropic-version") {
+      throw new Error("anthropic-messages auth header conflicts with required anthropic-version");
+    }
     const systemMessages = input.messages.filter((m) => m.role === "system");
     const body: Record<string, unknown> = {
-      model: input.model ?? ctx.model,
+      model: ctx.model,
       messages: buildMessages(input.messages),
       ...(systemMessages.length > 0
         ? { system: systemMessages.map((m) => m.content).join("\n\n") }
         : {}),
-      ...(typeof input.maxTokens === "number" ? { max_tokens: input.maxTokens } : {}),
+      max_tokens: input.maxTokens ?? 4096,
       ...(typeof input.temperature === "number" ? { temperature: input.temperature } : {}),
       ...(input.tools?.length ? {
         tools: input.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })),
@@ -133,16 +107,51 @@ export const anthropicMessagesAdapter: ProtocolAdapter = {
       ...(input.stream ? { stream: true } : {}),
       ...(input.extra ?? {}),
     };
+    const basePath = new URL(ctx.baseUrl).pathname.replace(/\/+$/, "");
     return {
-      url: joinUrl(ctx.baseUrl, "/v1/messages"),
+      url: appendUrlPath(ctx.baseUrl, basePath.endsWith("/v1") ? "/messages" : "/v1/messages"),
       method: "POST",
-      headers: buildHeaders(ctx),
+      headers: buildAuthHeadersWith(ctx, { "anthropic-version": "2023-06-01" }),
       body,
       stream: input.stream,
     };
   },
 
   parseResponse(raw: unknown, ctx: AdapterContext): LappResponse {
+    if (
+      !isRecord(raw)
+      || !Array.isArray(raw.content)
+      || raw.content.some((content) => !isRecord(content) || typeof content.type !== "string")
+    ) {
+      throw new Error("invalid anthropic-messages response");
+    }
+    for (const content of raw.content) {
+      if (content.type === "text" && typeof content.text !== "string") {
+        throw new Error("invalid anthropic-messages response");
+      }
+      if (content.type === "tool_use" && (
+        typeof content.id !== "string"
+        || typeof content.name !== "string"
+        || !isRecord(content.input)
+      )) {
+        throw new Error("invalid anthropic-messages response");
+      }
+    }
+    if (raw.model !== undefined && typeof raw.model !== "string") {
+      throw new Error("invalid anthropic-messages response");
+    }
+    if (raw.stop_reason !== undefined
+      && raw.stop_reason !== null
+      && typeof raw.stop_reason !== "string") {
+      throw new Error("invalid anthropic-messages response");
+    }
+    if (raw.usage !== undefined && (
+      !isRecord(raw.usage)
+      || [raw.usage.input_tokens, raw.usage.output_tokens]
+        .some((value) => value !== undefined && typeof value !== "number")
+    )) {
+      throw new Error("invalid anthropic-messages response");
+    }
     const r = raw as {
       content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>;
       model?: string;

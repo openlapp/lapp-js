@@ -1,100 +1,106 @@
 # 安全说明
 
-`lapp-js` 围绕一个简单原则设计：除非你明确要求，否则密钥不会离开磁盘。
+LAPP v1 假定：与 Profile 或共享 Vault 同属一个 OS 用户、并被明确授予访问权限的
+应用是可信应用。应用需要直接与上游 Provider 通信，因此
+`resolveConnection()` 会返回可用凭据。
 
-## 支持的密钥方案
+不要把 LAPP Profile 或解析后的连接交给不可信代码。如果应用不能得到原始凭据，
+就需要独立的策略服务；这不属于 v1。
 
-v1 支持两种运行时解析方案：
+## 密钥形式
 
-| 方案 | 示例 | 是否推荐 |
-|------|------|----------|
-| `plaintext` | `"sk-..."` | 否 — 会把密钥留在磁盘上。 |
-| `env://` | `"env://OPENAI_API_KEY"` | 是 — 密钥不进入配置文件。 |
+只允许三种形式：
 
-以下两种方案会被解析，但运行时会抛出 `UnsupportedSecretSchemeError`：
+| 形式 | 示例 | 建议 |
+|------|------|------|
+| Vault 引用 | `"vault://openai/default"` | 官方 SDK 新建凭据的默认方式；由当前用户的系统凭据库保护。 |
+| 环境变量引用 | `"env://OPENAI_API_KEY"` | 支持；密钥不会进入 Profile。 |
+| Plaintext | `"sk-..."` | 允许但产生警告；密钥会留在磁盘上。 |
 
-- `keychain://`
-- `file://`
+环境变量名必须匹配 `[A-Za-z_][A-Za-z0-9_]*`。Vault 引用必须正好包含 Provider
+ID 和 credential ID，且 Provider ID 与 Profile 一致。`keychain://`、`file://`、
+畸形引用与未知 URI 形式直接判为非法，不会静默解释。
 
-## 显示策略
+Vault 只提供静态存储保护，不是应用沙箱。同一 OS 用户下任何兼容进程都可能读取
+记录；应用构造直连 Provider 请求时也会得到明文。LAPP v1 不提供逐应用 ACL、
+网关、不可导出承诺、跨设备同步、密码恢复或权威审计日志。
 
-SDK 和 CLI 中所有会打印配置内容的路径默认都会对密钥脱敏：
+## 严格认证
 
-- `lapp inspect`
-- `validateProfile` 诊断信息
-- `inspectProfile` 摘要
-- CLI 错误输出（防御性正则脱敏）
+只能使用一个明确的 auth variant：
 
-需要显式传入 `revealSecrets: true`（SDK）或 `--reveal-secrets`（CLI）才会显示真实值。仅在可信环境中使用。
-
-`lapp chat` 中模型的回复会原样打印。对回复内容再跑一遍脱敏会误伤正常的密钥形状内容（例如模型在解释 API key 格式），因此故意不做处理。
-
-## 解析策略
-
-SDK **不会**读取 `process.env`，除非你显式 opt-in：
-
-```ts
-const client = createLappClient({ profile, resolveSecrets: true });
+```json
+{ "type": "none" }
+{ "type": "bearer", "secret": "vault://openai/default" }
+{ "type": "header", "name": "x-api-key", "secret": "env://ANTHROPIC_API_KEY" }
+{ "type": "query", "name": "key", "secret": "env://PROVIDER_KEY" }
 ```
 
-```bash
-lapp env --format bash --resolve
-```
+未知类型和缺失字段都是错误，不存在隐式 Bearer 行为。`requestHeaders` 不能包含
+认证、代理认证、Cookie 或 API key 请求头。名称按大小写不敏感规则必须唯一，且
+不能与 header auth 名称冲突。
 
-客户端在密钥未解析时会快速失败，不会用占位符或空字符串替代。
+## 何时解析密钥
 
-## 环境导出策略
+- `loadProfile()` 验证密钥引用，但不解析值。
+- `inspectProfile()` 只返回脱敏后的密钥摘要。
+- `listModels()` 不解析密钥，也不执行 I/O。
+- 异步 `resolveConnection()` 与 `refreshModels()` 只解析选中 Provider 的密钥；
+- `createLappClient()` 创建的 client 在每次请求前重新解析，因此轮换 Vault 后
+  无需重建 client。
 
-`exportEnv`（以及 `lapp env`）需要两个独立的 opt-in 才会输出明文或解析后的值：
+默认 resolver 在处理环境变量引用时读取 `process.env`，只有处理 Vault 引用时才
+打开当前用户的系统凭据库。测试和嵌入应用可注入 env map 与
+`CredentialVault`。环境变量、Vault 记录、原生后端缺失，或 envelope/绑定不合法
+时，都会在网络请求前失败，且不会回退到其他密钥形式。
 
-- `resolve: true` — 从 `process.env` 读取 `env://` 值。
-- `allowPlaintext: true` — 在输出中包含明文密钥。
+## CLI 显示策略
 
-没有 `allowPlaintext` 时明文条目会被省略；没有 `resolve` 时 `env://` 条目会作为字面引用输出。
+`inspect`、`resolve`、`credential status`、诊断和 JSON 输出都不会显示凭据。
+CLI 不提供 get 或 export；原始凭据只能通过无回显终端输入或 stdin 传入，不能
+作为命令行参数值。
 
-```ts
-const out = exportEnv(profile, {
-  format: "bash",
-  resolve: true,
-  allowPlaintext: false,
-});
-```
+Provider 错误文本在进入 CLI 诊断前会清理常见凭据形状。这只是纵深防御，不能
+代替“不记录请求头和解析后连接”的基本规则。
 
-## 错误脱敏
+## 地址绑定
 
-聊天或同步请求抛出错误时，`err.raw` 会对字符串叶子节点进行深度脱敏，使用一组共享的密钥正则（OpenAI/Anthropic 风格 key、OpenRouter、GitHub token、xAI、Google、通用 `Bearer ...` 等）。
+Vault envelope 绑定 Provider ID、标准化 origin 与认证 type/name。Header 名称转为
+小写后绑定，query 参数名保持大小写敏感。兼容客户端返回明文前必须校验绑定，并在
+注入认证前再次校验最终请求 origin。此外：
 
-注意：如果提供者把凭据嵌入非字符串字段，则无法保护。这是 v1 的已知限制。
+- `modelDiscovery.url` 必须与 `baseUrl` 同源；
+- 远端 origin 必须使用 HTTPS；
+- 本地开发允许 loopback HTTP；
+- URL 不能包含用户名、密码或 fragment；
+- 携带认证的发现请求不会跟随重定向。
 
-## 认证头去重
+启用 Profile 前必须审查。Profile 同时控制凭据引用和目标地址，因此从仓库复制或
+由他人提供的 Profile 是可执行的安全配置，不是无害数据。
+绑定能防止被修改的 Profile 通过官方 SDK 静默把 Vault 凭据送往其他 origin，但
+不能阻止恶意同用户进程直接读取共享系统凭据记录。
 
-适配器会在添加自己的认证头之前，大小写不敏感地从用户 `requestHeaders` 中移除 `authorization`、`x-api-key` 等认证相关头。这样用户自定义的 `X-Api-Key` 就不会和适配器认证头冲突。
+## 平台存储与恢复
 
-当设置 `auth.queryParam` 时，客户端会完全移除头认证，避免密钥在 URL 和头中同时泄露。
+Windows 实现使用当前用户的原生 Credential Manager。macOS 与 Linux 仅尽力支持，
+并依赖可工作的原生凭据服务。原生模块或服务不可用时，Vault 操作返回 typed error；
+LAPP 不会创建明文或加密文件回退。
 
-## 无认证提供者
+Vault 记录不属于 `LAPP_HOME` 备份，LAPP 也不会同步它。OS 账户、系统凭据库或设备
+重置可能使记录不可用。应在上游 Provider 保留独立恢复方式，例如轮换或新建 API
+key。
 
-本地/自托管提供者（如 Ollama、LM Studio、vLLM）通常不需要认证。在 SDK 中使用 `allowUnauthenticated: true`，在 CLI 中使用 `--no-auth`：
+## 文件安全
 
-```ts
-const client = createLappClient({
-  profile,
-  provider: "ollama",
-  model: "llama3",
-  allowUnauthenticated: true,
-});
-```
+Provider ID 使用严格、文件名安全的 grammar。Writer 在每次写入和删除前验证目标
+仍位于选中的 Profile 根目录内；非法或冲突 ID 会被拒绝，不会经过字符清洗后继续。
 
-```bash
-lapp provider add --id ollama --yes
-```
+## 建议
 
-`allowUnauthenticated` 会跳过认证头，但其他解析错误仍会快速失败。CLI 的 `lapp chat` / `lapp ping` 对这类提供者自动放行。
-
-## 实用建议
-
-- 所有真实密钥都使用 `env://`。
-- 不要提交包含 `plaintext` 密钥的 `.lapp` 配置。
-- 任何认证相关改动后运行 `lapp doctor`。
-- 将 `--reveal-secrets` 和 `--allow-plaintext` 视为特权操作。
-- 保持 `baseUrl` 稳定；轮换密钥通常只需要改环境变量。
+- 将权威 Profile 放在用户控制的 `LAPP_HOME`，不要默认使用不可信项目目录。
+- 新输入密钥默认使用 SDK Vault；外部管理的 secret 可用 `env://`；不要提交
+  plaintext 凭据。
+- 只有经过明确审查和显式 opt-in 才选择 plaintext storage。
+- 只有服务确实无需凭据时才使用 `auth.type: "none"`。
+- `modelDiscovery` 保持与 Provider 同源。
+- 手工修改后运行 `lapp validate`。

@@ -32,7 +32,7 @@ const cliReadme = read("packages/cli/README.md");
 const cliDoc = read("docs/cli.md");
 const cliZhDoc = read("docs/zh/cli.md");
 
-const srcUsageMatch = cliSrc.match(/return `Usage:\n([^`]+)`;/);
+const srcUsageMatch = cliSrc.match(/return `Usage:\r?\n([^`]+)`;/);
 if (!srcUsageMatch) {
   console.error("Could not find usage block in packages/cli/src/index.ts");
   process.exit(1);

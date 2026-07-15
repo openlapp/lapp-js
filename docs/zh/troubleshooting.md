@@ -1,61 +1,98 @@
 # 故障排除
 
-首先从 `lapp doctor` 开始。它会验证配置并检查每个启用的提供者是否能成功创建客户端。
+先执行验证和脱敏检查：
 
 ```bash
-lapp doctor
+lapp validate
+lapp inspect
 ```
+
+需要让其他程序消费结果时使用 `--json`。
 
 ## 类型化错误
 
-| 错误 | 含义 | 解决方法 |
-|------|------|----------|
-| `TargetResolutionError` | 找不到请求的提供者/模型、所有提供者被禁用、或匹配提供者没有启用模型。 | 检查提供者/模型 id，确保目标已启用，或设置全局默认。 |
-| `UnsupportedProtocolError` | 提供者的协议不是三个 v1 核心协议之一。 | 使用 `openai-chat-completions`、`openai-responses` 或 `anthropic-messages`。 |
-| `MissingEnvSecretError` | 使用了 `env://NAME` 但 `process.env[NAME]` 未设置。 | 导出该变量，或通过 `createLappClient({ env: { ... } })` 传入。 |
-| `UnsupportedSecretSchemeError` | 使用了 `keychain://` 或 `file://`。v1 会解析但不会解析出值。 | 改用 `env://` 或 `plaintext`。 |
-| `ModelSyncUnsupportedError` | 对没有公开模型列表的协议执行同步。 | Anthropic 需设置 `provider.links.models`。 |
-| `StreamingUnsupportedError` | 协议适配器没有流式解析器。 | 使用非流式 `chat()`，或确认该协议支持流式。 |
+| 错误 | 含义 | 修复 |
+|------|------|------|
+| `ProfileValidationError` | JSON 目录树未通过结构或语义验证。 | 运行 `lapp inspect`，逐项修复 ERROR 诊断。 |
+| `TargetResolutionError` | 无法解析 Provider、模型、alias、默认值、启用状态或协议交集。 | 查看错误 `code`；核对 canonical ID、启用状态、默认值和应用支持的协议。 |
+| `MissingEnvSecretError` / `ENV_SECRET_MISSING` | 缺少 `env://NAME` 对应的值。 | 导出变量，或传入显式 SDK 环境变量 map。 |
+| `CredentialError` | 密钥引用、Vault 后端、记录、权限或绑定失败。 | 查看稳定 `code`；先用 `credential status` 检查，再恢复或显式替换凭据。 |
+| `ModelRefreshError` | 未配置发现，或出现 HTTP、响应结构、分页错误。 | 检查 `modelDiscovery`、地址 origin、凭据和远端响应。 |
+| `StreamingUnsupportedError` | 选中的直连 adapter 不支持流式。 | 使用 `chat()` 或选择支持流式的协议。 |
 
-## 常见警告
+`TargetResolutionError.code` 包括 `PROVIDER_NOT_FOUND`、
+`PROVIDER_DISABLED`、`MODEL_NOT_FOUND`、`MODEL_DISABLED`、
+`MODEL_AMBIGUOUS`、`DEFAULT_NOT_FOUND`、`PROTOCOL_NOT_SUPPORTED`。
 
-### “No JSON schemas could be loaded”（无法加载 JSON Schema）
+`ModelRefreshError.code` 包括 `DISCOVERY_NOT_CONFIGURED`、
+`INVALID_RESPONSE`、`HTTP_ERROR`、`PAGINATION_ERROR`。
 
-SDK 找不到 LAPP JSON Schema，结构验证未执行。请检查 `packages/lapp/schema/` 是否包含 schema 文件（它们在构建时复制）。
+## Schema 快照错误
 
-### `baseUrl` 以 `/` 结尾
+如果 SDK 报告 LAPP Schema 缺失或未注册，请检查受版本控制的快照是否仍在
+`packages/lapp/schema/`；若被删除，请从版本控制恢复。`pnpm verify:spec` 会将该
+快照与固定的 canonical spec commit 比对。
 
-SDK 会警告 `baseUrl` 末尾的 `/`。请移除末尾斜杠。
+## Profile 无法加载
 
-### `keychain://` 或 `file://` 密钥方案
+- 文件必须是标准 JSON，名称为 `provider.json`、`models.json` 和
+  `global.json`。
+- 每个存在的文件都必须使用 `"schemaVersion": "1.0"`。
+- Provider 目录名必须等于 Provider ID。
+- 核心对象拒绝未知字段；实现数据应移入 `extensions`。
+- 即使 `loadProfile()` 无法返回有效 Profile，也可以运行
+  `lapp inspect --json` 查看部分、已脱敏的诊断。
 
-这些方案会被解析但运行时会抛出错误。生产环境请使用 `env://`。
+## 模型刷新失败
 
-## 常见问题
+逐项检查：
 
-### 为什么我设置的 `X-Api-Key` 请求头消失了？
+1. `provider.json` 包含 `modelDiscovery.protocol` 和绝对 URL。
+2. 发现 URL 与 `baseUrl` 使用相同 origin。
+3. 远端 URL 使用 HTTPS，或地址是 loopback HTTP。
+4. 选中的环境变量或 Vault 凭据可用，并仍与 Provider ID、origin 和认证形态一致。
+5. 响应符合配置的发现协议。
 
-认证相关头（`authorization`、`x-api-key`）会在适配器添加自己的认证前被大小写不敏感地移除。`requestHeaders` 只应包含非认证头；认证请通过 `auth` 配置。
+非法 HTTP 200 响应是错误，不是空模型目录。合法空列表不会修改 Profile。
 
-### 为什么 `lapp chat` 输出的模型 id 和配置里不一样？
+## 远端模型消失后仍保留在本地
 
-你可能使用了模型别名。别名在运行时会解析为真实模型 id。
+这是预期行为。`models.json` 是权威目录，刷新永不删除本地条目。确认不再需要后，
+再显式删除该模型。
 
-### 为什么我手动编辑后 `models.json` 的 `updatedAt` 总在变？
+## 已有模型元数据没有更新
 
-`applySyncedModels` 会用内部来源标记同步条目。写入器仅在该标记存在时才会重新生成 `updatedAt`。通过 `upsertModel`/`removeModel` 进行的手动编辑会清除该标记。
+刷新会保留本地字段。它只追加未知 ID，并可补充当前缺失的显示名称。如需有意修改
+本地字段，请编辑 `models.json` 或使用 `lapp model set`。
 
-### 我能把 `lapp-js` 当作代理或网关使用吗？
+## 模型 alias 解析结果异常
 
-不能。`lapp-js` 是客户端库和 CLI。它从你的进程直接向提供者发送请求，不运行持久化服务器，也不为其他应用代理流量。
+同一 Provider 内的 ID 和 alias 必须唯一，验证器会拒绝歧义。默认值始终保存
+canonical 模型 ID；默认值指向异常时请检查 `global.json`。
 
-### 在哪里报告问题？
+## 认证问题
 
-在 [lapp-js 仓库](https://github.com/openlapp/lapp-js) 提交 issue，并附上 `lapp doctor` 的输出。
+- 只能使用一个合法 `auth` variant：`none`、`bearer`、`header` 或 `query`。
+- 自定义 header/query 认证使用 `name` 字段。
+- 只接受 plaintext、`env://NAME` 与 `vault://provider/credential`。
+  `keychain://`、`file://` 和未知 scheme 都不合法。
+- 静态 `requestHeaders` 不能携带认证或 Cookie。
+- `lapp resolve --default chat --json` 只显示 scheme 与凭据状态，永不显示密钥；
+  CLI 不提供 reveal 或 export。
+- `VAULT_BINDING_MISMATCH` 表示 Provider ID、标准化 origin、auth type 或 auth name
+  已改变。使用 `credential set --overwrite` 重新输入；LAPP 不自动 rebind。
+- `VAULT_BACKEND_UNAVAILABLE` 表示原生模块或 OS 凭据服务不可用；不会回退到
+  plaintext 或文件。
+
+## 报告问题
+
+在 [lapp-js 仓库](https://github.com/openlapp/lapp-js)提交 issue，并附上命令、
+退出码、脱敏后的 `lapp inspect --json` 输出，以及不含 plaintext 凭据的最小
+Profile。
 
 ## 另见
 
+- [配置文档](configuration.md)
 - [安全说明](security.md)
-- [配置文件](configuration.md)
 - [协议说明](protocols.md)
-- [本地提供者](local-providers.md)
+- [本地 Provider](local-providers.md)

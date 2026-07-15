@@ -10,8 +10,6 @@ import {
   applyPreset,
   getPreset,
   listPresets,
-  PRESETS,
-  type ProviderPreset,
 } from "../src/presets.js";
 
 describe("getPreset / listPresets", () => {
@@ -39,16 +37,15 @@ describe("applyPreset — OpenAI", () => {
     expect(r.input.id).toBe("openai");
     expect(r.input.baseUrl).toBe("https://api.openai.com/v1");
     // Two protocols, Responses preferred first.
-    expect(r.input.protocols.map((p) => p.id)).toEqual([
+    expect(r.input.protocols).toEqual([
       "openai-responses",
       "openai-chat-completions",
     ]);
-    // String entries are normalized to objects carrying the preset baseUrl.
-    expect(r.input.protocols[0]).toEqual({
-      id: "openai-responses",
-      baseUrl: "https://api.openai.com/v1",
+    expect(r.input.auth).toEqual({ type: "bearer", secret: "env://OPENAI_API_KEY" });
+    expect(r.input.modelDiscovery).toEqual({
+      protocol: "openai-models",
+      url: "https://api.openai.com/v1/models",
     });
-    expect(r.input.auth).toEqual({ secret: "env://OPENAI_API_KEY" });
     // defaultModel comes from the preset.
     expect(r.input.defaultModel).toBe("gpt-4o-mini");
   });
@@ -56,13 +53,12 @@ describe("applyPreset — OpenAI", () => {
   it("overrides baseUrl on every string-form entry", () => {
     const r = applyPreset("openai", { baseUrl: "https://proxy.example.com/v1" });
     expect(r.input.baseUrl).toBe("https://proxy.example.com/v1");
-    expect(r.input.protocols[0]!.baseUrl).toBe("https://proxy.example.com/v1");
-    expect(r.input.protocols[1]!.baseUrl).toBe("https://proxy.example.com/v1");
+    expect(r.input.modelDiscovery?.url).toBe("https://proxy.example.com/v1/models");
   });
 
   it("overrides secret and model", () => {
     const r = applyPreset("openai", { secret: "env://MY_OPENAI_KEY", model: "gpt-4o" });
-    expect(r.input.auth).toEqual({ secret: "env://MY_OPENAI_KEY" });
+    expect(r.input.auth).toEqual({ type: "bearer", secret: "env://MY_OPENAI_KEY" });
     expect(r.input.defaultModel).toBe("gpt-4o");
   });
 });
@@ -71,7 +67,7 @@ describe("applyPreset — Ollama (no-auth local)", () => {
   it("resolves to auth type none with no secret", () => {
     const r = applyPreset("ollama");
     expect(r.input.baseUrl).toBe("http://localhost:11434/v1");
-    expect(r.input.protocols.map((p) => p.id)).toEqual(["openai-chat-completions"]);
+    expect(r.input.protocols).toEqual(["openai-chat-completions"]);
     expect(r.input.auth).toEqual({ type: "none" });
     expect(r.input.defaultModel).toBeUndefined();
   });
@@ -86,35 +82,14 @@ describe("applyPreset — Anthropic baseUrl has no /v1", () => {
   it("uses the spec baseUrl without a trailing /v1 segment", () => {
     const r = applyPreset("anthropic");
     expect(r.input.baseUrl).toBe("https://api.anthropic.com");
-    expect(r.input.protocols.map((p) => p.id)).toEqual(["anthropic-messages"]);
-    expect(r.input.auth).toEqual({ secret: "env://ANTHROPIC_API_KEY" });
+    expect(r.input.protocols).toEqual(["anthropic-messages"]);
+    expect(r.input.auth).toEqual({ type: "header", name: "x-api-key", secret: "env://ANTHROPIC_API_KEY" });
+    expect(r.input.modelDiscovery?.url).toBe("https://api.anthropic.com/v1/models");
   });
-});
 
-describe("applyPreset — object-form preset protocols keep their own baseUrl", () => {
-  it("does not clobber a protocol object's explicit baseUrl with the preset default", () => {
-    // Build a preset with a mixed string + object protocols list in-memory and
-    // resolve through the public API by temporarily registering it.
-    const custom: ProviderPreset = {
-      id: "custom",
-      displayName: "Custom",
-      protocols: [
-        "openai-chat-completions",
-        { id: "anthropic-messages", baseUrl: "https://anth.example.com" },
-      ],
-      baseUrl: "https://default.example.com/v1",
-      suggestedSecret: "env://CUSTOM_KEY",
-    };
-    const prev = PRESETS["custom"];
-    PRESETS["custom"] = custom;
-    try {
-      const r = applyPreset("custom");
-      expect(r.input.protocols[0]!.baseUrl).toBe("https://default.example.com/v1");
-      expect(r.input.protocols[1]!.baseUrl).toBe("https://anth.example.com");
-    } finally {
-      if (prev === undefined) delete PRESETS["custom"];
-      else PRESETS["custom"] = prev;
-    }
+  it("does not duplicate /v1 for an overridden Anthropic base URL", () => {
+    const r = applyPreset("anthropic", { baseUrl: "https://proxy.example.com/v1" });
+    expect(r.input.modelDiscovery?.url).toBe("https://proxy.example.com/v1/models");
   });
 });
 

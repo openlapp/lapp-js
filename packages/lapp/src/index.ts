@@ -1,28 +1,117 @@
-/**
- * @openlapp/lapp — TypeScript SDK for LAPP (Local AI Provider Profiles).
- *
- * Core roles:
- *  1. Read, validate, write, manage LAPP profiles.
- *  2. Send requests to configured providers via protocol adapters.
- *
- * See docs/sdk-cli-design.md.
- */
-
-export * from "./types.js";
-export * from "./config/discovery.js";
-export * from "./config/jsonc.js";
-export * from "./validate/index.js";
-export * from "./manage/index.js";
-export * from "./plan.js";
-export * from "./write/atomic.js";
-export * from "./secret/index.js";
-export * from "./env-export/index.js";
-export * from "./connection.js";
-export * from "./sync/index.js";
-export * from "./client/index.js";
+export {
+  CredentialError,
+  MissingEnvSecretError,
+  ModelRefreshError,
+  ProfileValidationError,
+  TargetResolutionError,
+  type AuthConfig,
+  type ChangePlan,
+  type ConnectionPlan,
+  type CredentialAuthBinding,
+  type CredentialBinding,
+  type CredentialErrorCode,
+  type CredentialResolver,
+  type CredentialStatus,
+  type CredentialVault,
+  type Diagnostic,
+  type DiagnosticLevel,
+  type GlobalConfig,
+  type Extensions,
+  type JsonPrimitive,
+  type JsonValue,
+  type LappProfile,
+  type LappProvider,
+  type ModelDescriptor,
+  type ModelDiscoveryConfig,
+  type ModelEntry,
+  type ModelRef,
+  type ModelSelector,
+  type ModelsConfig,
+  type ProfileInspection,
+  type ProviderConfig,
+  type ResolvedAuth,
+  type ResolvedConnection,
+  type SecretRef,
+  type SecretScheme,
+  type VaultCredentialStatus,
+  type VaultEnvelopeV1,
+  type VaultPutOptions,
+  type ValidationResult,
+} from "./types.js";
 
 export {
-  loadProfile,
   inspectProfile,
+  loadProfile,
+  resolveLappRoot,
   type LoadProfileOptions,
 } from "./config/discovery.js";
+export { validateProfile } from "./validate/index.js";
+export {
+  createProfile,
+  removeModel,
+  removeProvider,
+  setDefault,
+  upsertModel,
+  upsertProvider,
+  upsertProviderWithCredential,
+  type CredentialInput,
+  type CredentialWarning,
+  type CreateProfileInput,
+  type ManagedAuthConfig,
+  type ManagedProviderInput,
+  type ModelInput,
+  type ModelTarget,
+  type ProviderInput,
+  type UpsertProviderWithCredentialOptions,
+  type UpsertProviderWithCredentialResult,
+} from "./manage/index.js";
+export { planChanges } from "./plan.js";
+export { writeProfileAtomic, type WriteOptions } from "./write/atomic.js";
+export {
+  listModels,
+  resolveConnection,
+  selectConnection,
+  type ListModelsOptions,
+  type ResolveConnectionOptions,
+  type SelectConnectionOptions,
+} from "./connection.js";
+export {
+  LAPP_VAULT_SERVICE,
+  VAULT_SECRET_PATTERN,
+  assertCredentialRequestOrigin,
+  createCredentialResolver,
+  credentialBindingForProvider,
+  credentialBindingsEqual,
+  formatVaultSecretRef,
+  normalizeCredentialOrigin,
+  openSystemCredentialVault,
+  parseSecretRef,
+  parseVaultSecretRef,
+  redactSecret,
+  resolveAuthConfig,
+  resolveSecret,
+  type CredentialResolverOptions,
+  type ResolveSecretOptions,
+  type VaultReference,
+} from "./secret/index.js";
+export {
+  refreshModels,
+  type RefreshModelsOptions,
+  type RefreshModelsResult,
+} from "./sync/index.js";
+export {
+  createLappClient,
+  StreamingUnsupportedError,
+  type ChatInput,
+  type ChatMessage,
+  type CreateClientOptions,
+  type ExecuteWithToolsOptions,
+  type ExecuteWithToolsResult,
+  type LappClient,
+  type LappResponse,
+  type LappStreamEventUnion,
+  type ParsedToolCall,
+  type TestConnectionResult,
+  type ToolDefinition,
+  type ToolHandler,
+} from "./client/index.js";

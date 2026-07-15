@@ -23,15 +23,15 @@ jobs:
         with:
           path: lapp-js
 
-      # load.test.ts depends on sibling repo examples + fixtures.
       - uses: actions/checkout@v4
         with:
           repository: openlapp/lapp
+          ref: 5b6b4bd47b1d16cbede43d821046fc89e87c9689
           path: lapp
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 10.29.2
 
       - uses: actions/setup-node@v4
         with:
@@ -45,5 +45,92 @@ jobs:
       - run: pnpm build
         working-directory: lapp-js
 
+      - run: pnpm lint
+        working-directory: lapp-js
+
       - run: pnpm test
+        working-directory: lapp-js
+
+      - if: matrix.node-version == 22
+        run: pnpm coverage
+        working-directory: lapp-js
+
+      - if: matrix.node-version == 22
+        run: npm ci
+        working-directory: lapp
+
+      - if: matrix.node-version == 22
+        run: npm test
+        working-directory: lapp
+
+      - run: pnpm verify:docs
+        working-directory: lapp-js
+
+      - run: pnpm verify:spec
+        working-directory: lapp-js
+
+      - if: matrix.node-version == 22
+        run: pnpm smoke:pack
+        working-directory: lapp-js
+
+      - run: git diff --check
+        working-directory: lapp-js
+
+  windows-vault:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lapp-js
+
+      - uses: actions/checkout@v4
+        with:
+          repository: openlapp/lapp
+          ref: 5b6b4bd47b1d16cbede43d821046fc89e87c9689
+          path: lapp
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+          cache-dependency-path: lapp-js/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: lapp-js
+
+      - run: pnpm build
+        working-directory: lapp-js
+
+      - run: pnpm lint
+        working-directory: lapp-js
+
+      - run: pnpm test
+        working-directory: lapp-js
+
+      - run: pnpm verify:docs
+        working-directory: lapp-js
+
+      - run: pnpm verify:spec
+        working-directory: lapp-js
+
+      - run: pnpm test:vault:system
+        working-directory: lapp-js
+
+      - if: matrix.node-version == 22
+        run: pnpm smoke:pack
+        working-directory: lapp-js
+
+      - run: git diff --check
         working-directory: lapp-js

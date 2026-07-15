@@ -1,64 +1,114 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lapp.dev/schema/provider.schema.json",
-  "title": "LAPP provider.json",
+  "$id": "https://lapp.dev/schema/1.0/provider.schema.json",
+  "title": "LAPP v1 provider.json",
   "type": "object",
-  "required": ["id", "baseUrl"],
-  "anyOf": [
-    { "required": ["protocols"] },
-    { "required": ["protocol"] }
-  ],
-  "additionalProperties": true,
+  "required": ["schemaVersion", "id", "baseUrl", "protocols", "auth"],
+  "additionalProperties": false,
   "properties": {
-    "schemaVersion": { "type": "string" },
-    "id": { "type": "string", "minLength": 1 },
-    "name": { "type": "string" },
+    "schemaVersion": { "const": "1.0" },
+    "id": {
+      "$ref": "#/$defs/portableId"
+    },
+    "name": { "type": "string", "minLength": 1 },
     "enabled": { "type": "boolean" },
-    "protocol": { "type": "string", "minLength": 1 },
+    "baseUrl": { "type": "string", "minLength": 1 },
     "protocols": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "oneOf": [
-          { "type": "string", "minLength": 1 },
-          {
-            "type": "object",
-            "required": ["id"],
-            "additionalProperties": true,
-            "properties": {
-              "id": { "type": "string", "minLength": 1 },
-              "baseUrl": { "type": "string", "minLength": 1 },
-              "requestHeaders": {
-                "type": "object",
-                "additionalProperties": { "type": "string" }
-              },
-              "capabilities": {
-                "type": "array",
-                "items": { "type": "string", "minLength": 1 }
-              }
-            }
-          }
-        ]
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/protocolId" }
+    },
+    "auth": { "$ref": "#/$defs/auth" },
+    "requestHeaders": { "$ref": "#/$defs/headers" },
+    "modelDiscovery": {
+      "type": "object",
+      "required": ["protocol", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": { "enum": ["openai-models", "anthropic-models"] },
+        "url": { "type": "string", "minLength": 1 }
       }
     },
-    "baseUrl": { "type": "string", "minLength": 1 },
-    "links": {
+    "extensions": {
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "portableId": {
+      "type": "string",
+      "allOf": [
+        { "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+        {
+          "not": {
+            "anyOf": [
+              { "pattern": "^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.|$)" },
+              { "pattern": "\\.$" }
+            ]
+          }
+        }
+      ]
+    },
+    "protocolId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "secret": {
+      "type": "string",
+      "description": "A strict env:// or vault:// reference, or an explicit non-URI plaintext secret",
+      "pattern": "^(?:env://[A-Za-z_][A-Za-z0-9_]*|vault://(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.|/))[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9_-])?/(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.|$))[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9_-])?|(?!env:)(?!vault:)(?![A-Za-z][A-Za-z0-9+.-]*://)(?!\\s*$)[^\\r\\n]+)$"
     },
     "auth": {
-      "type": "object",
-      "additionalProperties": true,
-      "properties": {
-        "type": { "type": "string" },
-        "secret": { "type": "string" },
-        "header": { "type": "string" },
-        "queryParam": { "type": "string" }
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": { "type": { "const": "none" } }
+        },
+        {
+          "type": "object",
+          "required": ["type", "secret"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "bearer" },
+            "secret": { "$ref": "#/$defs/secret" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "secret"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "header" },
+            "name": { "$ref": "#/$defs/headerName" },
+            "secret": { "$ref": "#/$defs/secret" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "name", "secret"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "query" },
+            "name": { "type": "string", "minLength": 1 },
+            "secret": { "$ref": "#/$defs/secret" }
+          }
+        }
+      ]
     },
-    "requestHeaders": {
+    "headerName": {
+      "type": "string",
+      "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+    },
+    "headers": {
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "propertyNames": { "$ref": "#/$defs/headerName" },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[^\\r\\n]*$"
+      }
     }
   }
 }

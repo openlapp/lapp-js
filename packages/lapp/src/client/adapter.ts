@@ -1,3 +1,5 @@
+import type { ResolvedAuth } from "../types.js";
+
 /**
  * Protocol adapter interface.
  *
@@ -35,8 +37,6 @@ export interface ParsedToolCall {
 
 export interface ChatInput {
   messages: ChatMessage[];
-  /** Model override; falls back to the client's resolved model. */
-  model?: string;
   temperature?: number;
   maxTokens?: number;
   /** Provider-native extra fields merged into the request body. */
@@ -47,6 +47,8 @@ export interface ChatInput {
   tools?: ToolDefinition[];
   /** Provider-native tool choice override. */
   toolChoice?: unknown;
+  /** Cancels the provider request. */
+  signal?: AbortSignal;
 }
 
 export interface LappResponse {
@@ -117,18 +119,62 @@ export interface AdapterContext {
   providerId: string;
   protocol: string;
   baseUrl: string;
-  /** Resolved secret value (already resolved by the client). */
-  secret: string;
-  /** Auth type (default bearer). */
-  authType?: string;
-  /** Custom auth header name. */
-  authHeader?: string;
-  /** Custom auth query param name. */
-  authQueryParam?: string;
+  /** Fully resolved authentication returned by `resolveConnection`. */
+  auth: ResolvedAuth;
   /** Non-secret static request headers from the profile. */
   requestHeaders?: Record<string, string>;
   /** Resolved model id (real invocation name). */
   model: string;
+}
+
+const RESERVED_EXTRA_FIELDS = new Set([
+  "model",
+  "messages",
+  "input",
+  "instructions",
+  "stream",
+  "tools",
+  "tool_choice",
+  "auth",
+  "authentication",
+  "authorization",
+  "api_key",
+  "apikey",
+  "x-api-key",
+]);
+
+/** Reject fields that would bypass target, conversation, tool, or auth resolution. */
+export function assertSafeExtra(extra: Record<string, unknown> | undefined): void {
+  for (const key of Object.keys(extra ?? {})) {
+    if (RESERVED_EXTRA_FIELDS.has(key.toLowerCase())) {
+      throw new Error(`extra field is reserved: ${key}`);
+    }
+  }
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Parse provider-emitted tool arguments without treating primitives as objects. */
+export function parseToolArguments(raw: string): Pick<ParsedToolCall, "arguments" | "parseError" | "argumentsRaw"> {
+  try {
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {
+        arguments: {},
+        parseError: "invalid JSON object in tool call arguments",
+        argumentsRaw: raw,
+      };
+    }
+    return { arguments: parsed as Record<string, unknown> };
+  } catch {
+    return {
+      arguments: {},
+      parseError: "invalid JSON in tool call arguments",
+      argumentsRaw: raw,
+    };
+  }
 }
 
 export interface ProtocolAdapter {

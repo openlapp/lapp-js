@@ -1,43 +1,74 @@
-/**
- * Profile mutation APIs (pure / immutable).
- *
- * These return new `LappProfile` objects; they do not touch disk. The CLI
- * writes via `writeProfileAtomic`. Inputs are validated by the caller (or by
- * `writeProfileAtomic` before touching disk).
- *
- * Inputs are intentionally generic objects so the CLI can pass through flags
- * without importing the full config types.
- */
-
+import path from "node:path";
+import { CredentialError, ProfileValidationError, TargetResolutionError } from "../types.js";
 import type {
-  GlobalConfig,
+  AuthConfig,
+  CredentialVault,
+  Extensions,
   LappProfile,
-  LappProvider,
+  ModelDiscoveryConfig,
   ModelEntry,
-  ModelsConfig,
   ProviderConfig,
 } from "../types.js";
-import { MODEL_REF_KEYS } from "../validate/constants.js";
-import { UnsupportedProtocolError } from "../types.js";
+import { isValidModelId, isValidProviderId } from "../validate/constants.js";
+import { validateProfile } from "../validate/index.js";
+import { attachProfileRoot, copyProfileRoot } from "../profile-location.js";
+import {
+  credentialBindingForProvider,
+  formatVaultSecretRef,
+  openSystemCredentialVault,
+} from "../secret/index.js";
 
 export interface CreateProfileInput {
   rootDir: string;
-  manifest?: boolean;
-  global?: boolean;
 }
 
 export interface ProviderInput {
   id: string;
-  protocol?: string;
-  protocols?: ProviderConfig["protocols"];
-  baseUrl: string;
   name?: string;
   enabled?: boolean;
-  auth?: ProviderConfig["auth"];
+  baseUrl?: string;
+  protocols?: string[];
+  auth?: AuthConfig;
   requestHeaders?: Record<string, string>;
-  links?: ProviderConfig["links"];
-  /** Optional initial models list. */
+  modelDiscovery?: ModelDiscoveryConfig;
+  extensions?: Extensions;
   models?: ModelEntry[];
+}
+
+export type CredentialInput =
+  | {
+    secret: string;
+    storage?: "vault";
+    credentialId?: string;
+    overwrite?: boolean;
+  }
+  | { secret: string; storage: "plaintext" }
+  | { storage: "env"; name: string };
+
+export type ManagedAuthConfig =
+  | { type: "none" }
+  | { type: "bearer"; credential: CredentialInput }
+  | { type: "header"; name: string; credential: CredentialInput }
+  | { type: "query"; name: string; credential: CredentialInput };
+
+/** Provider input whose raw credentials are stored according to an explicit policy. */
+export type ManagedProviderInput = Omit<ProviderInput, "auth"> & {
+  auth?: ManagedAuthConfig;
+};
+
+export interface CredentialWarning {
+  code: "PLAINTEXT_SECRET_IN_USE";
+  message: string;
+}
+
+export interface UpsertProviderWithCredentialOptions {
+  vault?: CredentialVault;
+}
+
+export interface UpsertProviderWithCredentialResult {
+  profile: LappProfile;
+  credentialRef?: string;
+  warnings: CredentialWarning[];
 }
 
 export interface ModelInput {
@@ -45,266 +76,244 @@ export interface ModelInput {
   id: string;
   name?: string;
   aliases?: string[];
+  enabled?: boolean;
+  protocols?: string[];
   type?: string;
-  source?: "provider" | "manual";
-  capabilities?: string[];
   inputModalities?: string[];
   outputModalities?: string[];
+  capabilities?: string[];
   contextWindow?: number;
   maxOutputTokens?: number;
-  enabled?: boolean;
-  protocol?: string;
-  links?: ProviderConfig["links"];
-  metadata?: Record<string, unknown>;
+  extensions?: Extensions;
 }
 
 export interface ModelTarget {
   providerId: string;
-  /** Real model ID or alias. */
   model: string;
 }
 
 function clone(profile: LappProfile): LappProfile {
-  return {
-    rootDir: profile.rootDir,
-    manifest: profile.manifest ? structuredClone(profile.manifest) : undefined,
-    global: profile.global ? structuredClone(profile.global) : undefined,
-    providers: profile.providers.map((p) => ({
-      dir: p.dir,
-      config: structuredClone(p.config) as ProviderConfig,
-      models: p.models ? structuredClone(p.models) : null,
-    })),
-    diagnostics: profile.diagnostics.map((d) => ({ ...d })),
-  };
+  return copyProfileRoot(profile, structuredClone(profile));
 }
 
-function providerDirName(id: string): string {
-  // Provider id should match directory; sanitize minimally by forbidding path
-  // separators and Windows device-reserved names (CON, PRN, AUX, NUL, COM1-9,
-  // LPT1-9) which would either fail to write or write to the device on
-  // Windows. The validator warns when id !== dirName; we keep them equal.
-  const safe = id.replace(/[\\/:]+/g, "-");
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(safe)) {
-    return `${safe}-profile`;
+function requireProvider(profile: LappProfile, providerId: string) {
+  const provider = profile.providers.find((entry) => entry.config.id === providerId);
+  if (!provider) {
+    throw new TargetResolutionError(`provider not found: ${providerId}`, "PROVIDER_NOT_FOUND");
   }
-  return safe;
+  return provider;
 }
 
-/**
- * Create an empty profile structure. Does NOT write to disk; pair with
- * `writeProfileAtomic`.
- */
+function canonicalModelId(profile: LappProfile, target: ModelTarget): string {
+  const provider = requireProvider(profile, target.providerId);
+  const matches = provider.models.models.filter(
+    (model) => model.id === target.model || model.aliases?.includes(target.model),
+  );
+  if (matches.length === 0) {
+    throw new TargetResolutionError(
+      `model not found: ${target.providerId}/${target.model}`,
+      "MODEL_NOT_FOUND",
+    );
+  }
+  if (matches.length > 1) {
+    throw new TargetResolutionError(
+      `model is ambiguous: ${target.providerId}/${target.model}`,
+      "MODEL_AMBIGUOUS",
+    );
+  }
+  return matches[0]!.id;
+}
+
 export function createProfile(input: CreateProfileInput): LappProfile {
-  return {
-    rootDir: input.rootDir,
-    manifest: input.manifest ? { schemaVersion: "1.0" } : undefined,
-    global: input.global ? { schemaVersion: "1.0" } : undefined,
-    providers: [],
-    diagnostics: [],
-  };
+  return attachProfileRoot({ providers: [] }, path.resolve(input.rootDir));
 }
 
-/** Insert or update a provider (by id). Returns a new profile. */
+/** Add or patch a provider. Omitted fields are preserved on updates. */
 export function upsertProvider(profile: LappProfile, input: ProviderInput): LappProfile {
+  if (!isValidProviderId(input.id)) throw new Error(`invalid provider id: ${input.id}`);
   const next = clone(profile);
-  const dirName = providerDirName(input.id);
-  const dir = `${next.rootDir}/providers/${dirName}`.replace(/\\/g, "/");
-  const idx = next.providers.findIndex((p) => p.config.id === input.id);
-  const existing = idx >= 0 ? next.providers[idx]! : null;
-  // On update, start from the existing config and overlay only the fields the
-  // caller actually supplied, so fields like name/auth/requestHeaders/links
-  // survive a `lapp provider set` that only changes baseUrl. On create, build
-  // a fresh config from input (with the same field semantics).
+  const index = next.providers.findIndex((entry) => entry.config.id === input.id);
+  const existing = index >= 0 ? next.providers[index]! : undefined;
+  if (!existing && (!input.baseUrl || !input.protocols || !input.auth)) {
+    throw new Error("new provider requires baseUrl, protocols, and auth");
+  }
   const config: ProviderConfig = {
     ...(existing?.config ?? {}),
     schemaVersion: "1.0",
     id: input.id,
-    protocol: input.protocol ?? (
-      typeof input.protocols?.[0] === "string"
-        ? input.protocols[0]
-        : typeof input.protocols?.[0] === "object"
-          ? input.protocols[0].id
-          : existing?.config.protocol
-    ) ?? "",
-    // Overlay-only: preserve the existing multi-protocol array unless the
-    // caller explicitly passes `protocols`. Passing the legacy single-string
-    // `protocol` does NOT collapse a hand-edited multi-protocol array to
-    // `[input.protocol]` — the user can still edit the array directly.
-    protocols: input.protocols ?? existing?.config.protocols ?? (input.protocol ? [input.protocol] : undefined),
-    baseUrl: input.baseUrl,
     ...(input.name !== undefined ? { name: input.name } : {}),
     ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
-    ...(input.auth !== undefined ? { auth: input.auth } : {}),
-    ...(input.requestHeaders !== undefined ? { requestHeaders: input.requestHeaders } : {}),
-    ...(input.links !== undefined ? { links: input.links } : {}),
-    __dirName: dirName,
-  };
-
-  const models: ModelsConfig | null = input.models && input.models.length > 0
-    ? { schemaVersion: "1.0", models: input.models }
-    : null;
-
-  if (idx >= 0) {
-    next.providers[idx] = { config, models: models ?? next.providers[idx]!.models, dir };
-  } else {
-    next.providers.push({ config, models, dir });
-  }
-  return next;
-}
-
-/** Remove a provider by id. No-op if not found. */
-export function removeProvider(profile: LappProfile, providerId: string): LappProfile {
-  const next = clone(profile);
-  next.providers = next.providers.filter((p) => p.config.id !== providerId);
-  if (next.global) {
-    for (const key of MODEL_REF_KEYS) {
-      const ref = next.global[key];
-      if (ref && ref.providerId === providerId) {
-        delete next.global[key];
-      }
-    }
-  }
+    ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
+    ...(input.protocols !== undefined ? { protocols: [...input.protocols] } : {}),
+    ...(input.auth !== undefined ? { auth: structuredClone(input.auth) } : {}),
+    ...(input.requestHeaders !== undefined
+      ? { requestHeaders: { ...input.requestHeaders } }
+      : {}),
+    ...(input.modelDiscovery !== undefined
+      ? { modelDiscovery: { ...input.modelDiscovery } }
+      : {}),
+    ...(input.extensions !== undefined
+      ? { extensions: structuredClone(input.extensions) }
+      : {}),
+  } as ProviderConfig;
+  const models = input.models !== undefined
+    ? { schemaVersion: "1.0" as const, models: structuredClone(input.models) }
+    : existing?.models ?? { schemaVersion: "1.0" as const, models: [] };
+  const provider = { config, models };
+  if (index >= 0) next.providers[index] = provider;
+  else next.providers.push(provider);
   return next;
 }
 
 /**
- * Replace a provider's entire models list with the given config.
- * Used by the sync flow to apply a freshly-fetched model set without going
- * through per-entry upserts. Pass `null` to clear models.json (the writer
- * will then omit it on the next pass).
+ * Add or patch a provider while applying the SDK's credential-storage default.
+ * A raw credential is written to the current-user Vault unless plaintext is
+ * explicitly selected. This function only returns an in-memory profile.
  */
-export function replaceProviderModels(
+export async function upsertProviderWithCredential(
   profile: LappProfile,
-  providerId: string,
-  models: ModelsConfig | null,
-): LappProfile {
-  const next = clone(profile);
-  const provider = next.providers.find((p) => p.config.id === providerId);
-  if (!provider) {
-    throw new Error(`provider not found: ${providerId}`);
+  input: ManagedProviderInput,
+  options: UpsertProviderWithCredentialOptions = {},
+): Promise<UpsertProviderWithCredentialResult> {
+  const { auth: managedAuth, ...providerFields } = input;
+  if (managedAuth === undefined) {
+    return { profile: upsertProvider(profile, providerFields), warnings: [] };
   }
-  provider.models = models;
-  return next;
-}
+  if (managedAuth.type === "none") {
+    return {
+      profile: upsertProvider(profile, { ...providerFields, auth: { type: "none" } }),
+      warnings: [],
+    };
+  }
 
-/** Insert or update a model under a provider (by id). Returns a new profile. */
-export function upsertModel(profile: LappProfile, input: ModelInput): LappProfile {
-  const next = clone(profile);
-  const provider = next.providers.find((p) => p.config.id === input.providerId);
-  if (!provider) {
-    throw new Error(`provider not found: ${input.providerId}`);
-  }
-  const models: ModelsConfig = provider.models ?? { schemaVersion: "1.0", models: [] };
-  // Clear the internal sync marker on any manage edit. A `sync → manage`
-  // sequence must not cause the writer to re-stamp `updatedAt` for what is
-  // actually a user-driven edit; the marker is owned by `applySyncedModels`
-  // and the writer drops it on every read regardless (defense in depth).
-  delete (models as { __lappUpdatedAtSource?: unknown }).__lappUpdatedAtSource;
-  const idx = models.models.findIndex((m) => m.id === input.id);
-  const existingEntry = idx >= 0 ? models.models[idx]! : null;
-  // On update, start from the existing entry and overlay only the fields the
-  // caller supplied, so fields like aliases/capabilities/modalities/protocol
-  // survive a `lapp model set` that only changes --type.
-  const entry: ModelEntry = {
-    ...(existingEntry ?? {}),
-    id: input.id,
-    source: input.source ?? existingEntry?.source ?? "manual",
-    ...(input.name !== undefined ? { name: input.name } : {}),
-    ...(input.aliases !== undefined ? { aliases: input.aliases } : {}),
-    ...(input.type !== undefined ? { type: input.type } : {}),
-    ...(input.capabilities !== undefined ? { capabilities: input.capabilities } : {}),
-    ...(input.inputModalities !== undefined ? { inputModalities: input.inputModalities } : {}),
-    ...(input.outputModalities !== undefined ? { outputModalities: input.outputModalities } : {}),
-    ...(typeof input.contextWindow === "number" ? { contextWindow: input.contextWindow } : {}),
-    ...(typeof input.maxOutputTokens === "number" ? { maxOutputTokens: input.maxOutputTokens } : {}),
-    ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
-    ...(input.protocol !== undefined ? { protocol: input.protocol } : {}),
-    ...(input.links !== undefined ? { links: input.links } : {}),
-    ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
-  };
-  if (idx >= 0) {
-    models.models[idx] = entry;
-  } else {
-    models.models.push(entry);
-  }
-  provider.models = models;
-  return next;
-}
+  const credential = managedAuth.credential;
+  let secretReference: string;
+  let credentialRef: string | undefined;
+  let vaultWrite: { secret: string; overwrite: boolean } | undefined;
+  const warnings: CredentialWarning[] = [];
 
-/** Remove a model by id or alias. No-op if not found. */
-export function removeModel(profile: LappProfile, target: ModelTarget): LappProfile {
-  const next = clone(profile);
-  const provider = next.providers.find((p) => p.config.id === target.providerId);
-  if (!provider || !provider.models) return next;
-  const removedIds = new Set<string>();
-  for (const m of provider.models.models) {
-    if (m.id === target.model) removedIds.add(m.id);
-    if (Array.isArray(m.aliases) && m.aliases.includes(target.model)) removedIds.add(m.id);
-  }
-  provider.models.models = provider.models.models.filter((m) => !removedIds.has(m.id));
-  // Any manage edit (including remove) clears the internal sync marker, so
-  // the writer does not treat a post-sync removal as a sync write.
-  delete (provider.models as { __lappUpdatedAtSource?: unknown }).__lappUpdatedAtSource;
-  // If the removed model was referenced by any global default, clear it so the
-  // next client call doesn't silently fall back to a non-existent model. A
-  // global default can reference a model by id OR by alias, so check both —
-  // a default set via `model: "fast"` (alias) must be cleared when "fast" is
-  // removed, even though removedIds holds real ids.
-  if (removedIds.size > 0 && next.global) {
-    for (const key of MODEL_REF_KEYS) {
-      const ref = next.global[key];
-      if (!ref || ref.providerId !== target.providerId) continue;
-      if (typeof ref.model !== "string") continue;
-      if (removedIds.has(ref.model)) {
-        delete next.global[key];
-        continue;
-      }
-      // Default references the model by an alias: clear it too.
-      const stillResolvable = next.providers
-        .find((p) => p.config.id === target.providerId)
-        ?.models?.models.some((m) => Array.isArray(m.aliases) && m.aliases.includes(ref.model!));
-      if (!stillResolvable) delete next.global[key];
+  if (credential.storage === "env") {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(credential.name)) {
+      throw new CredentialError("INVALID_SECRET_REFERENCE", "invalid env credential reference");
     }
+    secretReference = `env://${credential.name}`;
+  } else if (credential.storage === "plaintext") {
+    if (!credential.secret || /[\r\n]/.test(credential.secret)) {
+      throw new CredentialError("INVALID_SECRET_REFERENCE", "credential cannot be empty");
+    }
+    secretReference = credential.secret;
+    warnings.push({
+      code: "PLAINTEXT_SECRET_IN_USE",
+      message: "credential is stored as plaintext",
+    });
+  } else if (credential.storage === undefined || credential.storage === "vault") {
+    if (!credential.secret || /[\r\n]/.test(credential.secret)) {
+      throw new CredentialError("INVALID_SECRET_REFERENCE", "credential cannot be empty");
+    }
+    credentialRef = formatVaultSecretRef(input.id, credential.credentialId ?? "default");
+    secretReference = credentialRef;
+    vaultWrite = { secret: credential.secret, overwrite: credential.overwrite ?? false };
+  } else {
+    throw new CredentialError("INVALID_SECRET_REFERENCE", "unsupported credential storage mode");
   }
+
+  const auth: AuthConfig = managedAuth.type === "bearer"
+    ? { type: "bearer", secret: secretReference }
+    : { type: managedAuth.type, name: managedAuth.name, secret: secretReference };
+  const nextProfile = upsertProvider(profile, { ...providerFields, auth });
+  const validation = validateProfile(nextProfile);
+  if (!validation.valid) {
+    throw new ProfileValidationError(
+      validation.diagnostics,
+      "refusing to store a credential for an invalid profile",
+    );
+  }
+
+  if (credentialRef && vaultWrite) {
+    const config = nextProfile.providers.find((entry) => entry.config.id === input.id)!.config;
+    const binding = credentialBindingForProvider(config);
+    if (!binding) {
+      throw new CredentialError("INVALID_SECRET_REFERENCE", "credential binding is missing");
+    }
+    const vault = options.vault ?? await openSystemCredentialVault();
+    await vault.put(credentialRef, vaultWrite.secret, binding, {
+      overwrite: vaultWrite.overwrite,
+    });
+  }
+
+  return {
+    profile: nextProfile,
+    ...(credentialRef ? { credentialRef } : {}),
+    warnings,
+  };
+}
+
+export function removeProvider(profile: LappProfile, providerId: string): LappProfile {
+  const referenced = Object.entries(profile.global?.defaults ?? {})
+    .find(([, ref]) => ref.providerId === providerId);
+  if (referenced) throw new Error(`provider is referenced by default "${referenced[0]}"`);
+  const next = clone(profile);
+  next.providers = next.providers.filter((entry) => entry.config.id !== providerId);
   return next;
 }
 
-/** Set a global default model reference for any default slot. */
-export function setDefaultModelRef(
+/** Add or patch a model. Omitted fields are preserved on updates. */
+export function upsertModel(profile: LappProfile, input: ModelInput): LappProfile {
+  if (!isValidModelId(input.id)) throw new Error(`invalid model id: ${input.id}`);
+  const next = clone(profile);
+  const provider = requireProvider(next, input.providerId);
+  const models = provider.models;
+  const index = models.models.findIndex((entry) => entry.id === input.id);
+  const existing = index >= 0 ? models.models[index]! : undefined;
+  const entry: ModelEntry = {
+    ...(existing ?? {}),
+    id: input.id,
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.aliases !== undefined ? { aliases: [...input.aliases] } : {}),
+    ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+    ...(input.protocols !== undefined ? { protocols: [...input.protocols] } : {}),
+    ...(input.type !== undefined ? { type: input.type } : {}),
+    ...(input.inputModalities !== undefined ? { inputModalities: [...input.inputModalities] } : {}),
+    ...(input.outputModalities !== undefined ? { outputModalities: [...input.outputModalities] } : {}),
+    ...(input.capabilities !== undefined ? { capabilities: [...input.capabilities] } : {}),
+    ...(input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
+    ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
+    ...(input.extensions !== undefined ? { extensions: structuredClone(input.extensions) } : {}),
+  };
+  if (index >= 0) models.models[index] = entry;
+  else models.models.push(entry);
+  provider.models = models;
+  return next;
+}
+
+export function removeModel(profile: LappProfile, target: ModelTarget): LappProfile {
+  const modelId = canonicalModelId(profile, target);
+  const referenced = Object.entries(profile.global?.defaults ?? {}).find(
+    ([, ref]) => ref.providerId === target.providerId && ref.modelId === modelId,
+  );
+  if (referenced) throw new Error(`model is referenced by default "${referenced[0]}"`);
+  const next = clone(profile);
+  const provider = requireProvider(next, target.providerId);
+  provider.models.models = provider.models.models.filter((entry) => entry.id !== modelId);
+  return next;
+}
+
+export function setDefault(
   profile: LappProfile,
-  key: keyof GlobalConfig & `default${string}`,
+  task: string,
   target: ModelTarget,
 ): LappProfile {
+  const modelId = canonicalModelId(profile, target);
+  const provider = requireProvider(profile, target.providerId);
+  const model = provider.models.models.find((entry) => entry.id === modelId)!;
+  if (provider.config.enabled === false) {
+    throw new TargetResolutionError(`provider is disabled: ${target.providerId}`, "PROVIDER_DISABLED");
+  }
+  if (model.enabled === false) {
+    throw new TargetResolutionError(`model is disabled: ${target.providerId}/${modelId}`, "MODEL_DISABLED");
+  }
   const next = clone(profile);
-  if (!next.global) next.global = { schemaVersion: "1.0" };
-  next.global[key] = { providerId: target.providerId, model: target.model };
+  next.global ??= { schemaVersion: "1.0", defaults: {} };
+  next.global.defaults[task] = { providerId: target.providerId, modelId };
   return next;
 }
-
-/** Set a global default model reference (chat slot). Backward-compatible wrapper. */
-export function setDefaultModel(profile: LappProfile, target: ModelTarget): LappProfile {
-  return setDefaultModelRef(profile, "defaultModel", target);
-}
-
-/** Predicate: is the protocol supported by the v1 client SDK? */
-export function isSupportedProtocol(protocol: string): boolean {
-  return (
-    protocol === "openai-chat-completions" ||
-    protocol === "openai-responses" ||
-    protocol === "anthropic-messages"
-  );
-}
-
-/**
- * Return a copy of `profile` with `profile.global` guaranteed to be set
- * (initialized to a minimal `{ schemaVersion: "1.0" }` if absent). The
- * returned profile is a fresh object; the input is not mutated.
- */
-export function ensureGlobal(profile: LappProfile): LappProfile {
-  if (profile.global) return profile;
-  const next = clone(profile);
-  next.global = { schemaVersion: "1.0" };
-  return next;
-}
-
-export { UnsupportedProtocolError } from "../types.js";

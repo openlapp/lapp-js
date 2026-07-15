@@ -1,60 +1,138 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Contributor guidance for `lapp-js`.
 
-## What this is
+## Product boundary
 
-`lapp-js` is a TypeScript monorepo implementing the LAPP (Local AI Provider Profiles) convention: a **client SDK** (`@openlapp/lapp`) that reads, validates, writes, manages `.lapp` profiles and calls providers directly, plus a **thin CLI** (`@openlapp/cli`, installs the `lapp` command) that wraps the SDK. It is explicitly **not a gateway** — no persistent server, no proxying for other apps, no billing.
+`lapp-js` implements LAPP as a trusted local Provider Registry:
 
-The canonical LAPP spec, JSON Schemas, example profiles, and validator fixtures live in a **sibling repo** at `../lapp` (see `scripts/lapp-paths.mts`). This repo imports schemas from there and its tests load `../lapp/examples` and `../lapp/tools/validator/fixtures`. The build copies schemas into `packages/lapp/schema/` so the published package is self-contained. CI checks out both repos as siblings (see `.github/workflows/`).
+- `@openlapp/lapp` loads, validates, queries, resolves, refreshes, edits, and
+  writes local profiles; its optional client calls upstream providers directly.
+- `@openlapp/cli` is a thin SDK wrapper with stable JSON output.
+- Applications may also implement the three-file LAPP contract directly.
 
-## CI / CD
+v1 is limited to the local Registry, explicit Profile management, connection
+resolution, and optional direct upstream calls. Unreleased drafts have no
+compatibility or migration layer.
 
-- **`.github/workflows/ci.yml`** — runs `build` + `test` on every push/PR to `main`, across Node 18/20/22.
-- **`.github/workflows/release.yml`** — triggers on `v*` tags (or `workflow_dispatch`): resolves version → tests → sets version in both `package.json` → builds → publishes `@openlapp/lapp` then `@openlapp/cli` to npm → creates a GitHub Release. Requires `NPM_TOKEN` secret in the repo.
+The profile is standard JSON only:
+
+```text
+~/.lapp/global.json
+~/.lapp/providers/<id>/provider.json
+~/.lapp/providers/<id>/models.json
+```
+
+`models.json` is authoritative. Remote model refresh is explicit, only appends
+unknown IDs or fills missing names, and never removes or overwrites local data.
+
+## Canonical spec and schemas
+
+The canonical spec is pinned to commit
+`5b6b4bd47b1d16cbede43d821046fc89e87c9689`. This repository vendors the three
+v1 Schemas in `packages/lapp/schema/` so published packages remain
+self-contained. Both packages also vendor the canonical bilingual protocol
+specifications and bilingual user agreements. `spec-lock.json` stores that full
+commit and immutable content hashes; `pnpm verify:spec` also verifies an available sibling checkout is at the
+exact pinned commit. CI explicitly checks out that SHA, so push the canonical
+commit before using it in `lapp-js` CI or release workflows. When a Schema shape
+changes, update the spec, validator fixtures, vendored schemas/specifications, and lock
+together. A semantic-only rule change updates the spec, validator, fixtures,
+and pinned commit without inventing a Schema change.
+
+Do not restore build-time Schema copying from a mutable sibling checkout.
 
 ## Commands
 
-Run from repo root. Workspace uses **pnpm** (`packageManager: pnpm@10.29.2`), Node `>=18.18.0`.
+Run from the repository root with Node `>=18.18.0` and pnpm 10:
 
-- `pnpm install` — install workspace deps.
-- `pnpm build` — builds `@openlapp/lapp` then `@openlapp/cli` (filtered order matters: CLI depends on the SDK). The SDK's `prebuild` runs `copy-schema` first.
-- `pnpm test` — run vitest once (`vitest run`). Tests are in `packages/**/test/**/*.test.ts`.
-- `pnpm test:watch` — vitest watch mode.
-- Run a single test file: `pnpm vitest run packages/lapp/test/client.test.ts`
-- Run a single test by name: `pnpm vitest run -t "resolves alias to real model id"`
-- `pnpm lint` — runs `pnpm -r run lint`; **note**: no package defines a `lint` script today, so this is currently a no-op. Add scripts per-package before relying on it.
-- `pnpm clean` — `rimraf` each package's `dist` (and the SDK's copied `schema/*.schema.json`).
+- `pnpm install --frozen-lockfile`
+- `pnpm build`
+- `pnpm lint`
+- `pnpm test`
+- `pnpm verify:docs`
+- `pnpm verify:spec`
+- `pnpm smoke:pack`
 
-Per-package build: `pnpm --filter @openlapp/lapp run build`. The SDK builds with `tsup` (ESM+CJS, sourcemaps) then `tsc --emitDeclarationOnly` for `.d.ts`; the CLI builds with `tsup` (ESM only, `#!/usr/bin/env node` banner). Both target ES2022 / NodeNext module resolution (see `tsconfig.base.json`: strict, `noUncheckedIndexedAccess`, `isolatedModules`).
+The SDK builds ESM, CJS, source maps, and declarations. The CLI builds an ESM
+`lapp` executable. `pnpm clean` removes `dist` but preserves the versioned
+Schema snapshot.
 
-## Architecture
+CI runs build, lint, tests, docs, and spec checks on Node 18/20/22, plus Ubuntu
+and Windows Node 22 package/bin smokes. Only pushing a `v*` tag starts a
+release; the tag must match both committed package versions. Prereleases
+publish under `next`, stable versions under `latest`.
 
-### SDK layers (`packages/lapp/src/`)
+Stable release artifacts must not contain unreleased install notices or draft
+spec status. The actual Distributor must complete legal review and supply its
+identity, contact, governing law, dispute terms, controlling language, and
+privacy notice before relying on the bundled user-agreement template as
+binding.
 
-The SDK is the product; the CLI is only its first consumer. **All profile logic belongs in the SDK** — the CLI must not implement parsing, editing, or request building itself.
+## SDK architecture
 
-- **`config/`** — `discovery.ts` resolves the root (explicit path > `LAPP_HOME` env > `~/.lapp`), scans `providers/<id>/provider.json|jsonc`, loads `models.json|jsonc`, `global.json|jsonc`, `manifest.json|jsonc`, and normalizes into `LappProfile`. `jsonc.ts` strips comments — **ported verbatim** from `../lapp/tools/validator/lapp-validate.mjs::stripJsonc` so parsing matches upstream exactly; do not "improve" it divergently.
-- **`validate/`** — two layers stacked: (1) JSON Schema via ajv against the LAPP schemas, (2) custom semantic rules in code. The semantic layer exists because the schemas use `additionalProperties: true` for forward-compat (spec: "safely ignore unknown fields"), so checks like alias duplicates, global-ref existence, secret-scheme warnings, and sensitive-header warnings live in `validate/index.ts`, not the schema. `constants.ts` holds `CORE_PROTOCOLS` (the 3 v1 protocols) and `SENSITIVE_HEADERS`.
-- **`manage/`** — pure/immutable profile mutation: `createProfile`, `upsertProvider`, `upsertModel`, `removeProvider`, `removeModel`, `setDefaultModel`. Each returns a **new** `LappProfile` (uses `structuredClone`); they never touch disk. `upsert*` overlays only the fields the caller supplied onto the existing entry so a partial update (e.g. `model set --type`) doesn't wipe siblings.
-- **`plan.ts`** — `planChanges(before, after)` computes a file-level create/modify/delete diff so the CLI can show what would happen before writing. Treats existing `.jsonc` as `.json` write targets (new files are always `.json`).
-- **`write/atomic.ts`** — `writeProfileAtomic` implements the design's atomic-write rule: build in memory → validate → write a hidden same-dir temp file → `fsync` → rename over target → on failure remove only that temp. **No backup, no rollback, no temp directory.** Validates before touching disk and refuses to write invalid profiles. Pass `options.before` (the on-disk profile before the edit) so removed providers' orphan `provider.json`/`models.json` get unlinked after writes succeed. `stableStringify` sorts keys and strips `__`-prefixed internal fields for deterministic output.
-- **`secret/`** — `parseSecretRef`, `redactSecret`, `resolveSecret`. v1 resolves only `plaintext` and `env://NAME`; `keychain://` and `file://` are parsed but return `UnsupportedSecretSchemeError` at runtime. **Never reads `process.env` unless `resolve: true`** — opt-in is mandatory.
-- **`env-export/`** — `exportEnv` emits shell statements (bash/zsh/fish/powershell/cmd) for the profile's secrets, for sourcing into tools that read keys from env (Aider, Continue.dev, Codex CLI). Same opt-in policy; plaintext requires both `resolve` and `allowPlaintext`.
-- **`client/`** — `createLappClient({ profile, provider, model })` resolves a target, picks a protocol adapter, exposes `chat` / `rawChat` / `testConnection`. Requests go **directly** to the provider. Three adapters: `openai-chat`, `openai-responses`, `anthropic-messages`, all implementing the `ProtocolAdapter` interface in `adapter.ts` (`buildRequest` + `parseResponse` into the unified `LappResponse` shape with `raw` preserved). Unsupported protocols throw `UnsupportedProtocolError`.
+All profile and connection behavior belongs in `packages/lapp/src/`; the CLI
+must not duplicate it.
 
-### CLI (`packages/cli/src/index.ts`) — published as `@openlapp/cli`
+- `config/`: resolve explicit path, `LAPP_HOME`, or `~/.lapp`; parse standard
+  JSON; `loadProfile` returns only validated domain data; `inspectProfile`
+  returns partial redacted diagnostics.
+- `validate/`: Ajv validates the three strict Schemas, then a small semantic
+  pass checks cross-file identity, aliases, defaults, URLs, protocols, headers,
+  and secret references.
+- `manage/`, `plan.ts`, `write/`: immutable patch operations, file plans,
+  containment checks, validation, and same-directory temp/fsync/rename writes.
+  v1 assumes one writer and has no profile-wide transaction or backup.
+- `connection.ts`: the only `listModels` and `resolveConnection` path. Listing
+  is pure; resolution handles canonical IDs, aliases, enabled state, ordered
+  protocol intersection, and strict auth.
+- `sync/index.ts`: despite the directory name, this is only the explicit
+  `refreshModels` implementation. It performs strict same-origin model
+  discovery and returns a new in-memory Profile without writing.
+- `client/`: adapters for `openai-chat-completions`, `openai-responses`, and
+  `anthropic-messages`. Every request target comes from `resolveConnection`.
 
-Single-file CLI. Installs the `lapp` binary. Parse args → call SDK → print. Write commands always show the `planChanges` diff first and require `--yes` to apply (or `--dry-run` to only preview). Secrets are redacted by default; `--reveal-secrets` opts in. Error text is scrubbed with `redactAll` (regex `SECRET_PATTERNS`) as defense-in-depth before printing — note the model's reply in `chat` is printed **verbatim** and deliberately not redacted (redaction would mangle legitimate key-shaped content).
+Package-root exports are explicit in `packages/lapp/src/index.ts`. Parsing
+helpers, Ajv test hooks, adapter internals, and discovery internals stay private.
 
-### Cross-cutting rules to preserve
+## CLI architecture
 
-- **Disabled providers** (`enabled: false`) are kept in `profile.providers` during load so writes can round-trip the on-disk file, but are **skipped** by the client (target resolution) and by `env-export`. Don't filter them at load time.
-- **Secrets**: redact by default everywhere (inspect, diagnostics, CLI output). Resolving `env://` requires explicit opt-in. The client fails fast on unresolved secrets rather than sending a placeholder — never substitute a bogus value.
-- **Auth-header dedup**: adapters strip auth-carrying keys (`authorization`, `x-api-key`) from user `requestHeaders` case-insensitively before adding their own, so a user-supplied `X-Api-Key` doesn't produce two distinct headers. When `auth.queryParam` is set, the client strips header auth to avoid leaking the secret in both URL and header logs.
-- **URL handling**: the SDK never auto-appends `/v1` for OpenAI-compatible providers (many include it in `baseUrl`); Anthropic's adapter dedups a trailing `/v1` only when it's the sole last segment. `baseUrl` should not end with `/` (warned).
-- **Internal fields**: `__file`, `__dirName`, and any `__`-prefixed keys are bookkeeping only — stripped on write by `stableStringify`.
+`packages/cli/src/index.ts` is bootstrap/router only. `args.ts` uses strict
+`node:util.parseArgs`; `commands/profile.ts` owns profile commands,
+`commands/runtime.ts` owns resolve/ping/chat, and `output.ts` owns JSON envelopes,
+errors, exit semantics, and redaction.
 
-## Testing notes
+Machine output is one `{"version":1,"data":...}` document; errors use the same
+versioned envelope on stderr. No CLI command emits a credential. Raw values are
+accepted only through a no-echo TTY prompt or stdin, never an argv value. Never
+add prompts, diagnostics, or debug text to JSON stdout.
 
-Tests import paths from `scripts/lapp-paths.mts`, which resolves `../lapp` relative to this repo. **If the sibling `lapp` repo is not checked out alongside `lapp-js`, the example/fixture-based tests in `load.test.ts` will fail** (the SDK's own unit tests in `client.test.ts`, `manage-write.test.ts`, `secret.test.ts`, `env-export.test.ts`, `jsonc.test.ts` use in-memory profiles and a stubbed `fetchImpl` and run without it). `vitest.config.ts` sets `globals: false` (import `describe`/`it`/`expect` from `vitest`) and `environment: "node"`.
+## Invariants
+
+- Do not accept alternate file formats, old field spellings, or silent auth
+  defaults.
+- Core objects reject unknown properties; extension data belongs in
+  `extensions`.
+- Provider IDs are rejected, never sanitized; every write/delete target must
+  stay under the selected root.
+- `requestHeaders` are non-secret, cannot carry auth or cookies, use names that
+  are unique case-insensitively, and cannot collide with header auth.
+- `modelDiscovery.url` must be same-origin with `baseUrl`; remote URLs use
+  HTTPS, loopback may use HTTP, and credential-bearing requests reject redirects.
+- `listModels` performs no I/O or secret resolution.
+- `selectConnection` is the canonical pure model/protocol selector;
+  `resolveConnection` asynchronously applies the credential resolver.
+- Missing environment/Vault secrets and binding mismatches fail before any
+  request; plaintext writes require explicit opt-in and warn.
+- Vault backend failures never fall back to files, environment variables, or
+  plaintext. Native error messages and rollback diagnostics must be redacted.
+- Removing a provider/model referenced by a default is rejected until the
+  default changes.
+- Preserve unrelated dirty-worktree changes.
+
+## Tests
+
+Use isolated temporary Profile roots and stubbed or local `fetch` implementations.
+Security and non-trivial parsing changes need one focused regression test. The
+pack smoke must install produced tarballs outside the workspace and invoke the
+real package entry points and `lapp` binary.

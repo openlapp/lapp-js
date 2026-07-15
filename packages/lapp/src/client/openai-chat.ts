@@ -1,7 +1,7 @@
 /**
  * OpenAI Chat Completions adapter.
  *
- * POSTs `{baseUrl}/chat/completions` with a bearer token. The base URL is used
+ * POSTs `{baseUrl}/chat/completions` with the resolved profile auth. The base URL is used
  * verbatim — the SDK never auto-appends `/v1` (per spec URL Handling). Many
  * OpenAI-compatible providers already include `/v1` in their `baseUrl`.
  */
@@ -15,30 +15,30 @@ import type {
   ParsedToolCall,
   ProtocolAdapter,
 } from "./adapter.js";
+import { assertSafeExtra, isRecord, parseToolArguments } from "./adapter.js";
 import { parseSse } from "./sse.js";
-import { buildAuthHeaders } from "./http.js";
-
-function joinUrl(base: string, suffix: string): string {
-  return `${base.replace(/\/+$/, "")}${suffix}`;
-}
+import { appendUrlPath, buildAuthHeaders } from "./http.js";
 
 function parseToolCalls(toolCalls: unknown): ParsedToolCall[] | undefined {
   if (!Array.isArray(toolCalls)) return undefined;
   const out: ParsedToolCall[] = [];
   for (const tc of toolCalls) {
-    const rawArgs = typeof tc.function?.arguments === "string" ? tc.function.arguments : "";
-    let args: Record<string, unknown> = {};
-    let parseError: string | undefined;
-    try {
-      args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
-    } catch {
-      parseError = "invalid JSON in tool_call arguments";
+    if (
+      !isRecord(tc)
+      || tc.type !== "function"
+      || typeof tc.id !== "string"
+      || !isRecord(tc.function)
+      || typeof tc.function.name !== "string"
+      || typeof tc.function.arguments !== "string"
+    ) {
+      throw new Error("invalid openai-chat-completions response");
     }
+    const rawArgs = tc.function.arguments;
+    const parsed = parseToolArguments(rawArgs);
     out.push({
       id: String(tc.id ?? ""),
-      name: String(tc.function?.name ?? ""),
-      arguments: args,
-      ...(parseError ? { parseError, argumentsRaw: rawArgs } : {}),
+      name: String(tc.function.name ?? ""),
+      ...parsed,
     });
   }
   return out.length ? out : undefined;
@@ -48,8 +48,9 @@ export const openaiChatCompletionsAdapter: ProtocolAdapter = {
   protocol: "openai-chat-completions",
 
   buildRequest(input: ChatInput, ctx: AdapterContext): AdapterRequest {
+    assertSafeExtra(input.extra);
     const body: Record<string, unknown> = {
-      model: input.model ?? ctx.model,
+      model: ctx.model,
       messages: input.messages.map((m) => {
         if (m.role === "tool") {
           return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
@@ -77,7 +78,7 @@ export const openaiChatCompletionsAdapter: ProtocolAdapter = {
       ...(input.extra ?? {}),
     };
     return {
-      url: joinUrl(ctx.baseUrl, "/chat/completions"),
+      url: appendUrlPath(ctx.baseUrl, "/chat/completions"),
       method: "POST",
       headers: buildAuthHeaders(ctx),
       body,
@@ -86,6 +87,32 @@ export const openaiChatCompletionsAdapter: ProtocolAdapter = {
   },
 
   parseResponse(raw: unknown, ctx: AdapterContext): LappResponse {
+    if (!isRecord(raw) || !Array.isArray(raw.choices) || raw.choices.length === 0) {
+      throw new Error("invalid openai-chat-completions response");
+    }
+    const firstChoice = raw.choices[0];
+    if (!isRecord(firstChoice) || !isRecord(firstChoice.message)) {
+      throw new Error("invalid openai-chat-completions response");
+    }
+    const message = firstChoice.message;
+    if (!(typeof message.content === "string" || message.content === null || Array.isArray(message.tool_calls))) {
+      throw new Error("invalid openai-chat-completions response");
+    }
+    if (raw.model !== undefined && typeof raw.model !== "string") {
+      throw new Error("invalid openai-chat-completions response");
+    }
+    if (firstChoice.finish_reason !== undefined
+      && firstChoice.finish_reason !== null
+      && typeof firstChoice.finish_reason !== "string") {
+      throw new Error("invalid openai-chat-completions response");
+    }
+    if (raw.usage !== undefined && (
+      !isRecord(raw.usage)
+      || [raw.usage.prompt_tokens, raw.usage.completion_tokens, raw.usage.total_tokens]
+        .some((value) => value !== undefined && typeof value !== "number")
+    )) {
+      throw new Error("invalid openai-chat-completions response");
+    }
     const r = raw as {
       choices?: Array<{
         message?: { content?: string; tool_calls?: unknown };

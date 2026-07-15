@@ -7,13 +7,14 @@
  * a client, not a gateway.
  */
 
-import { resolveSecret } from "../secret/index.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { selectConnection } from "../connection.js";
 import {
+  CredentialError,
   TargetResolutionError,
-  UnsupportedProtocolError,
+  type CredentialResolver,
+  type CredentialVault,
   type LappProfile,
-  type LappProvider,
-  type ModelEntry,
 } from "../types.js";
 import type {
   AdapterContext,
@@ -27,8 +28,13 @@ import type {
 import { openaiChatCompletionsAdapter } from "./openai-chat.js";
 import { openaiResponsesAdapter } from "./openai-responses.js";
 import { anthropicMessagesAdapter } from "./anthropic-messages.js";
-import { getPrimaryProtocol, getProtocolBaseUrl, mergeProtocolRequestHeaders } from "../protocols.js";
 import { redactErrorText, redactRawObject } from "../redact.js";
+import { applyQueryAuth } from "./http.js";
+import {
+  assertCredentialRequestOrigin,
+  createCredentialResolver,
+  resolveAuthConfig,
+} from "../secret/index.js";
 
 export type {
   ChatInput,
@@ -54,16 +60,25 @@ export { redactErrorText, redactRawObject } from "../redact.js";
 export interface CreateClientOptions {
   /** Profile to read provider/model config from. */
   profile: LappProfile;
-  /** Provider id. Required unless a global default exists. */
+  /** Provider id. Must be supplied together with `model`. */
   provider?: string;
-  /** Real model id or alias. Falls back to global default. */
+  /** Real model id or alias. Must be supplied together with `provider`. */
   model?: string;
-  /** Resolve secrets from `process.env` (required to actually call a provider). */
-  resolveSecrets?: boolean;
-  /** Allow providers with no auth config (for local/self-hosted models). */
-  allowUnauthenticated?: boolean;
+  /** Named global default used when provider/model are omitted. Defaults to `chat`. */
+  default?: string;
   /** Custom env source (for tests). */
   env?: Record<string, string | undefined>;
+  /** Optional Vault implementation, primarily for tests and embedding. */
+  vault?: CredentialVault;
+  /** Fully custom credential resolver. Takes precedence over env/vault. */
+  resolver?: CredentialResolver;
+  /**
+   * Scrub the credential resolved for each request from successful response
+   * objects and stream events. The CLI enables this so stdout cannot echo a
+   * Vault credential. SDK callers may leave it disabled to preserve upstream
+   * response bytes exactly.
+   */
+  redactSuccessfulSecrets?: boolean;
   /**
    * Custom fetch implementation (for tests / non-Node runtimes).
    * Default uses global `fetch`.
@@ -76,6 +91,8 @@ export interface TestConnectionResult {
   provider: string;
   model: string;
   protocol: string;
+  /** Stable credential/target error code when the test fails before a response. */
+  code?: string;
   message?: string;
 }
 
@@ -121,73 +138,6 @@ export interface ExecuteWithToolsResult {
   messages: import("./adapter.js").ChatMessage[];
 }
 
-interface ResolvedTarget {
-  provider: LappProvider;
-  modelId: string;
-  modelEntry?: ModelEntry;
-}
-
-function resolveTarget(options: CreateClientOptions): ResolvedTarget {
-  const { profile, provider, model } = options;
-  let providerId = provider;
-  let modelId = model;
-
-  if (!providerId || !modelId) {
-    const def = profile.global?.defaultModel;
-    if (def && (def.providerId === providerId || !providerId)) {
-      if (!providerId) providerId = def.providerId;
-      if (!modelId) modelId = def.model;
-    }
-  }
-
-  if (!providerId) {
-    if (profile.providers.length === 0) {
-      throw new TargetResolutionError("no providers available in profile");
-    }
-    const firstEnabled = profile.providers.find((p) => p.config.enabled !== false);
-    if (!firstEnabled) {
-      throw new TargetResolutionError("no enabled provider available in profile");
-    }
-    providerId = firstEnabled.config.id;
-  }
-
-  const lappProvider = profile.providers.find((p) => p.config.id === providerId);
-  if (!lappProvider) {
-    throw new TargetResolutionError(`provider not found: ${providerId}`);
-  }
-  if (lappProvider.config.enabled === false) {
-    throw new TargetResolutionError(`provider is disabled: ${providerId}`);
-  }
-
-  const protocol = getPrimaryProtocol(lappProvider.config).id;
-  if (!ADAPTERS[protocol]) {
-    throw new UnsupportedProtocolError(protocol);
-  }
-
-  const resolved = resolveModelId(lappProvider, modelId);
-  return { provider: lappProvider, modelId: resolved.modelId, modelEntry: resolved.modelEntry };
-}
-
-function resolveModelId(
-  provider: LappProvider,
-  requested: string | undefined,
-): { modelId: string; modelEntry?: ModelEntry } {
-  if (!requested) {
-    const first = provider.models?.models.find((m) => m.enabled !== false);
-    if (first) return { modelId: first.id, modelEntry: first };
-    throw new TargetResolutionError(
-      `no model specified and provider "${provider.config.id}" has no enabled models`,
-    );
-  }
-  const byId = provider.models?.models.find((m) => m.id === requested);
-  if (byId) return { modelId: requested, modelEntry: byId };
-  const byAlias = provider.models?.models.find(
-    (m) => Array.isArray(m.aliases) && m.aliases.includes(requested),
-  );
-  if (byAlias) return { modelId: byAlias.id, modelEntry: byAlias };
-  return { modelId: requested };
-}
-
 export class StreamingUnsupportedError extends Error {
   override name = "StreamingUnsupportedError";
   constructor(modelId: string) {
@@ -197,127 +147,197 @@ export class StreamingUnsupportedError extends Error {
 }
 
 export function createLappClient(options: CreateClientOptions): LappClient {
-  const { profile, env, fetchImpl, allowUnauthenticated } = options;
-  const resolveSecrets = options.resolveSecrets ?? false;
-  const target = resolveTarget(options);
-  const lappProvider = target.provider;
-  const protocolEntry = getPrimaryProtocol(lappProvider.config);
-  const protocol = protocolEntry.id;
-  const adapter = ADAPTERS[protocol]!;
+  const { profile, env, fetchImpl } = options;
+  const hasProvider = options.provider !== undefined;
+  const hasModel = options.model !== undefined;
+  if (hasProvider !== hasModel) {
+    throw new TargetResolutionError("provider and model must be supplied together");
+  }
+  if (hasProvider && options.default !== undefined) {
+    throw new TargetResolutionError("default cannot be combined with provider/model");
+  }
 
-  /**
-   * When the secret is delivered via a query parameter, strip auth-carrying
-   * headers and append the secret to the URL so the credential is not
-   * transmitted twice — once in the URL and once in a header (which would
-   * land in different access logs).
-   */
-  function applyAuthQueryParam(
-    headers: Record<string, string>,
-    url: string,
-    ctx: AdapterContext,
-  ): { headers: Record<string, string>; url: string } {
-    if (!ctx.authQueryParam || !ctx.secret) return { headers, url };
-    const stripKeys = new Set<string>([
-      (ctx.authHeader ?? "authorization").toLowerCase(),
-      "authorization",
-      "x-api-key",
-    ]);
-    const stripped: Record<string, string> = {};
-    for (const [k, v] of Object.entries(headers)) {
-      if (stripKeys.has(k.toLowerCase())) continue;
-      stripped[k] = v;
-    }
-    const sep = url.includes("?") ? "&" : "?";
+  const selector = hasProvider
+    ? { providerId: options.provider!, model: options.model! } as const
+    : { default: options.default ?? "chat" } as const;
+  const plan = selectConnection(profile, selector, {
+    supportedProtocols: Object.keys(ADAPTERS),
+  });
+  const resolver = options.resolver ?? createCredentialResolver({
+    ...(env ? { env } : {}),
+    ...(options.vault ? { vault: options.vault } : {}),
+  });
+  const protocol = plan.protocol;
+  const adapter = ADAPTERS[protocol]!;
+  const doFetch = fetchImpl ?? globalThis.fetch;
+  const redactSuccessfulSecrets = options.redactSuccessfulSecrets ?? false;
+
+  async function requestContext(): Promise<{
+    ctx: AdapterContext;
+    sensitiveValues: string[];
+  }> {
+    // Resolve immediately before every provider operation. The client never
+    // retains a plaintext credential, and a Vault rotation is visible on the
+    // next request.
+    const auth = await resolveAuthConfig(plan.auth, plan.credentialBinding, { resolver });
+    const ctx: AdapterContext = {
+      providerId: plan.providerId,
+      protocol: plan.protocol,
+      baseUrl: plan.baseUrl,
+      auth,
+      requestHeaders: plan.requestHeaders,
+      model: plan.modelId,
+    };
     return {
-      headers: stripped,
-      url: `${url}${sep}${encodeURIComponent(ctx.authQueryParam)}=${encodeURIComponent(ctx.secret)}`,
+      ctx,
+      sensitiveValues: ctx.auth.type === "none" ? [] : [ctx.auth.secret],
     };
   }
 
-  const buildContext = (): AdapterContext => {
-    const secretResult = resolveSecret(lappProvider.config.auth?.secret, {
-      resolve: resolveSecrets,
-      env,
-    });
-    if (!secretResult.ok) {
-      if (allowUnauthenticated && secretResult.reason === "unset") {
-        // continue with empty secret for local/unauthenticated providers
-      } else {
-        throw secretResult.error;
-      }
+  function redactThrown(error: unknown, sensitiveValues: readonly string[]): Error {
+    const source = error instanceof Error ? error : new Error(String(error));
+    if (source instanceof CredentialError) {
+      return new CredentialError(
+        source.code,
+        redactErrorText(source.message, sensitiveValues),
+      );
     }
-    return {
-      providerId: lappProvider.config.id,
-      protocol,
-      baseUrl: getProtocolBaseUrl(lappProvider.config, protocolEntry),
-      secret: secretResult.ok ? secretResult.value : "",
-      authType: lappProvider.config.auth?.type,
-      authHeader: lappProvider.config.auth?.header,
-      authQueryParam: lappProvider.config.auth?.queryParam,
-      requestHeaders: mergeProtocolRequestHeaders(lappProvider.config, protocolEntry),
-      model: target.modelId,
-    };
-  };
+    const redacted = new Error(redactErrorText(source.message, sensitiveValues));
+    redacted.name = source.name;
+    if (typeof error === "object" && error !== null && "code" in error) {
+      (redacted as Error & { code?: unknown }).code = (error as { code?: unknown }).code;
+    }
+    if (typeof error === "object" && error !== null && "status" in error) {
+      (redacted as Error & { status?: unknown }).status = (error as { status?: unknown }).status;
+    }
+    if (typeof error === "object" && error !== null && "raw" in error) {
+      (redacted as Error & { raw?: unknown }).raw = redactRawObject(
+        (error as { raw?: unknown }).raw,
+        sensitiveValues,
+      );
+    }
+    return redacted;
+  }
 
-  const doFetch = fetchImpl ?? globalThis.fetch;
-
-  async function send(input: ChatInput): Promise<{ raw: unknown; ctx: AdapterContext; req: ReturnType<ProtocolAdapter["buildRequest"]> }> {
-    const ctx = buildContext();
-    const req = adapter.buildRequest(input, ctx);
-    const { headers, url } = applyAuthQueryParam(req.headers, req.url, ctx);
-    const resp = await doFetch(url, {
-      method: req.method,
-      headers,
-      body: JSON.stringify(req.body),
-    });
-    const text = await resp.text();
-    let raw: unknown;
+  async function fetchProvider(
+    url: string,
+    init: RequestInit,
+    sensitiveValues: readonly string[],
+  ): Promise<Response> {
     try {
-      raw = text ? JSON.parse(text) : {};
+      return await doFetch(url, init);
+    } catch (error) {
+      throw redactThrown(error, sensitiveValues);
+    }
+  }
+
+  async function readResponseText(
+    response: Response,
+    sensitiveValues: readonly string[],
+  ): Promise<string> {
+    try {
+      return await response.text();
+    } catch (error) {
+      throw redactThrown(error, sensitiveValues);
+    }
+  }
+
+  function parseResponseText(text: string): unknown {
+    try {
+      return text ? JSON.parse(text) : {};
     } catch {
-      raw = { _rawText: text };
+      return { _rawText: text };
     }
-    if (!resp.ok) {
-      const err = new Error(`provider ${ctx.providerId} returned ${resp.status}: ${redactErrorText(text)}`);
-      (err as Error & { status?: number }).status = resp.status;
-      // Scrub `err.raw` so callers can log/inspect it without leaking
-      // credentials echoed in the response body. The redacted copy is
-      // structurally identical to the parsed body — only string leaves
-      // matching `SECRET_PATTERNS` are replaced with `<redacted>`.
-      (err as Error & { raw?: unknown }).raw = redactRawObject(raw);
-      throw err;
+  }
+
+  function providerHttpError(
+    ctx: AdapterContext,
+    response: Response,
+    text: string,
+    raw: unknown,
+    sensitiveValues: readonly string[],
+  ): Error {
+    const error = new Error(
+      `provider ${ctx.providerId} returned ${response.status}: ${redactErrorText(text, sensitiveValues)}`,
+    );
+    (error as Error & { status?: number }).status = response.status;
+    (error as Error & { raw?: unknown }).raw = redactRawObject(raw, sensitiveValues);
+    return error;
+  }
+
+  async function send(input: ChatInput): Promise<{
+    raw: unknown;
+    ctx: AdapterContext;
+    sensitiveValues: string[];
+  }> {
+    input.signal?.throwIfAborted();
+    const { ctx, sensitiveValues } = await requestContext();
+    try {
+      const req = adapter.buildRequest(input, ctx);
+      if (plan.credentialBinding) {
+        assertCredentialRequestOrigin(plan.credentialBinding, req.url);
+      }
+      const url = applyQueryAuth(ctx, req.url);
+      const resp = await fetchProvider(url, {
+        method: req.method,
+        headers: req.headers,
+        body: JSON.stringify(req.body),
+        redirect: "error",
+        signal: input.signal,
+      }, sensitiveValues);
+      const text = await readResponseText(resp, sensitiveValues);
+      const raw = parseResponseText(text);
+      if (!resp.ok) {
+        throw providerHttpError(ctx, resp, text, raw, sensitiveValues);
+      }
+      return { raw, ctx, sensitiveValues };
+    } catch (error) {
+      throw redactThrown(error, sensitiveValues);
     }
-    return { raw, ctx, req };
   }
 
   async function* stream(input: ChatInput): AsyncIterable<LappStreamEventUnion> {
     if (!adapter.parseStream) {
-      throw new StreamingUnsupportedError(target.modelId);
+      throw new StreamingUnsupportedError(plan.modelId);
     }
-    const ctx = buildContext();
-    const req = adapter.buildRequest({ ...input, stream: true }, ctx);
-    const { headers, url } = applyAuthQueryParam(req.headers, req.url, ctx);
-    const resp = await doFetch(url, {
-      method: req.method,
-      headers,
-      body: JSON.stringify(req.body),
-    });
+    input.signal?.throwIfAborted();
+    const { ctx, sensitiveValues } = await requestContext();
+    try {
+      const req = adapter.buildRequest({ ...input, stream: true }, ctx);
+      if (plan.credentialBinding) {
+        assertCredentialRequestOrigin(plan.credentialBinding, req.url);
+      }
+      const url = applyQueryAuth(ctx, req.url);
+      const resp = await fetchProvider(url, {
+        method: req.method,
+        headers: req.headers,
+        body: JSON.stringify(req.body),
+        redirect: "error",
+        signal: input.signal,
+      }, sensitiveValues);
 
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`provider ${ctx.providerId} returned ${resp.status}: ${redactErrorText(text)}`);
+      if (!resp.ok) {
+        const text = await readResponseText(resp, sensitiveValues);
+        throw providerHttpError(ctx, resp, text, parseResponseText(text), sensitiveValues);
+      }
+
+      if (!resp.body) {
+        throw new Error(`provider ${ctx.providerId} returned an empty stream body`);
+      }
+
+      for await (const event of adapter.parseStream(resp.body, ctx)) {
+        yield redactSuccessfulSecrets || event.kind === "error"
+          ? redactRawObject(event, sensitiveValues) as LappStreamEventUnion
+          : event;
+      }
+    } catch (error) {
+      throw redactThrown(error, sensitiveValues);
     }
-
-    if (!resp.body) {
-      throw new Error(`provider ${ctx.providerId} returned an empty stream body`);
-    }
-
-    yield* adapter.parseStream(resp.body, ctx);
   }
 
   return {
-    providerId: lappProvider.config.id,
-    model: target.modelId,
+    providerId: plan.providerId,
+    model: plan.modelId,
     protocol,
 
     async chat(input: ChatInput): Promise<LappResponse> {
@@ -330,8 +350,15 @@ export function createLappClient(options: CreateClientOptions): LappClient {
           `chat() does not support stream: true; use client.stream() to receive streaming deltas`,
         );
       }
-      const { raw, ctx } = await send(input);
-      return adapter.parseResponse(raw, ctx);
+      const { raw, ctx, sensitiveValues } = await send(input);
+      try {
+        const response = adapter.parseResponse(raw, ctx);
+        return redactSuccessfulSecrets
+          ? redactRawObject(response, sensitiveValues) as LappResponse
+          : response;
+      } catch (error) {
+        throw redactThrown(error, sensitiveValues);
+      }
     },
 
     async rawChat(input: ChatInput): Promise<unknown> {
@@ -340,8 +367,13 @@ export function createLappClient(options: CreateClientOptions): LappClient {
           `rawChat() does not support stream: true; use client.stream() to receive streaming deltas`,
         );
       }
-      const { raw } = await send(input);
-      return raw;
+      const { raw, ctx, sensitiveValues } = await send(input);
+      try {
+        adapter.parseResponse(raw, ctx);
+      } catch (error) {
+        throw redactThrown(error, sensitiveValues);
+      }
+      return redactSuccessfulSecrets ? redactRawObject(raw, sensitiveValues) : raw;
     },
 
     stream,
@@ -354,24 +386,28 @@ export function createLappClient(options: CreateClientOptions): LappClient {
     ): Promise<ExecuteWithToolsResult> {
       const maxTurns = options.maxTurns ?? 8;
       const messages: ChatMessage[] = [...input.messages];
+      const ajv = new Ajv2020({ allErrors: true, strict: false });
+      const validators = new Map(
+        tools.map((tool) => [tool.name, ajv.compile(tool.parameters)] as const),
+      );
       let turns = 0;
       let lastText = "";
       while (turns < maxTurns) {
-        if (options.signal?.aborted) {
-          throw new Error("executeWithTools: aborted");
-        }
+        options.signal?.throwIfAborted();
         turns++;
         const { stream: _stream, ...rest } = input;
         const resp = await this.chat({
           ...rest,
           messages,
           tools,
+          signal: options.signal ?? input.signal,
           ...(options.toolChoice !== undefined ? { toolChoice: options.toolChoice } : {}),
         });
         lastText = resp.text;
         const calls = resp.toolCalls ?? [];
         if (calls.length === 0) {
           // Final answer — no more tool calls.
+          messages.push({ role: "assistant", content: lastText });
           return { text: lastText, turns, messages };
         }
         // Echo the assistant turn with its tool calls so subsequent requests
@@ -387,8 +423,16 @@ export function createLappClient(options: CreateClientOptions): LappClient {
         });
         for (const call of calls) {
           const handler = handlers[call.name];
+          const validator = validators.get(call.name);
           let result: string;
-          if (!handler) {
+          if (call.parseError) {
+            result = `error: invalid arguments for tool "${call.name}": ${call.parseError}`;
+          } else if (!validator) {
+            result = `error: unknown tool "${call.name}"`;
+          } else if (!validator(call.arguments)) {
+            const details = ajv.errorsText(validator.errors, { separator: "; " });
+            result = `error: invalid arguments for tool "${call.name}": ${details}`;
+          } else if (!handler) {
             result = `error: no handler registered for tool "${call.name}"`;
           } else {
             try {
@@ -410,22 +454,32 @@ export function createLappClient(options: CreateClientOptions): LappClient {
 
     async testConnection(): Promise<TestConnectionResult> {
       try {
-        const { ctx } = await send({
+        const { raw, ctx, sensitiveValues } = await send({
           messages: [{ role: "user", content: "ping" }],
           maxTokens: 1,
         });
+        try {
+          adapter.parseResponse(raw, ctx);
+        } catch (error) {
+          throw redactThrown(error, sensitiveValues);
+        }
         return { ok: true, provider: ctx.providerId, model: ctx.model, protocol: ctx.protocol };
       } catch (err) {
+        const redacted = redactThrown(err, []);
+        const code = "code" in redacted && typeof (redacted as Error & { code?: unknown }).code === "string"
+          ? (redacted as Error & { code: string }).code
+          : undefined;
         return {
           ok: false,
-          provider: lappProvider.config.id,
-          model: target.modelId,
+          provider: plan.providerId,
+          model: plan.modelId,
           protocol,
-          message: (err as Error).message,
+          ...(code ? { code } : {}),
+          message: redacted.message,
         };
       }
     },
   };
 }
 
-export { UnsupportedProtocolError, TargetResolutionError } from "../types.js";
+export { TargetResolutionError } from "../types.js";

@@ -1,140 +1,143 @@
 # lapp-js
 
-The TypeScript SDK and CLI for **LAPP** (Local AI Provider Profiles): describe your AI providers once in a local profile, then call them from the terminal or from TypeScript. **v1.0.0**
+The TypeScript SDK and CLI for **LAPP** (Local AI Provider Profiles). LAPP is a
+local provider registry: applications discover models and connection details,
+then communicate with the upstream provider directly.
 
 > **Languages:** [English](README.md) | [中文](README_zh.md)
 
-`lapp-js` is a **client, not a gateway** — no persistent server, no proxying for other apps, no billing. Your process talks to the provider directly.
-
 ```text
-.lapp profile  →  @openlapp/lapp SDK  →  protocol adapter  →  provider API
+Direct: app -> read ~/.lapp -> upstream API
+SDK:    app -> @openlapp/lapp -> upstream API
+CLI:    app -> lapp JSON output -> upstream API
 ```
 
-| Package | What it is |
-|---------|------------|
-| [`@openlapp/cli`](docs/cli.md) | The `lapp` command — configure and chat from your terminal. |
-| [`@openlapp/lapp`](docs/sdk.md) | The SDK — read, write, and use profiles from TypeScript. |
+Applications always communicate with upstream providers directly; no
+background service or request-routing component is required.
+
+| Package | Purpose |
+|---------|---------|
+| [`@openlapp/lapp`](docs/sdk.md) | Load and manage profiles, list and refresh models, resolve credentials, and optionally call supported chat APIs. |
+| [`@openlapp/cli`](docs/cli.md) | Thin command-line wrapper with stable JSON output. |
 
 ## Install
 
 ```bash
-npm install -g @openlapp/cli     # the CLI
-npm install @openlapp/lapp       # the SDK, in a project
+npm install @openlapp/lapp
+npm install -g @openlapp/cli
 ```
 
-Requires Node 18.18 or newer.
+Node.js 18.18 or newer is required.
 
-## The 30-second tour
+## Profile
 
-**Setup is once. Chat is every time.** You write a small profile that says where your provider lives and which model to use — then chatting is a one-liner. For well-known providers, a preset fills in the protocol, base URL, and suggested secret for you.
+LAPP v1 uses standard JSON and three file types:
 
-```bash
-# 1) One-time setup — a preset does the heavy lifting (see `lapp presets`)
-lapp provider add --id openai --model gpt-4o --yes
-
-# 2) Chat — one line, uses the default model you just set
-lapp chat "Say hi in five words."
-
-# 3) Switch model on the fly — inline…
-lapp chat openai/gpt-4o-mini "Quick question."
-
-# …or with flags
-lapp chat "Another one" --provider openai --model gpt-4o-mini
-
-# 4) Stream the reply
-lapp chat "Count to ten" --stream
+```text
+~/.lapp/
+├── global.json
+└── providers/
+    └── openai/
+        ├── provider.json
+        └── models.json
 ```
 
-> **No preset for your provider?** Pass the protocol and base URL explicitly:
-> `lapp provider add --id my-proxy --protocol openai-chat-completions --base-url https://my-proxy/v1 --secret env://MY_PROXY_KEY --yes`. Every write command shows a change plan first and needs `--yes` to apply (use `--dry-run` to preview).
+`models.json` is the local authoritative model list. Remote discovery happens
+only when explicitly requested and only appends newly discovered models; it
+never removes models or overwrites existing local fields.
 
-### Copy-paste recipes
+See [Configuration](docs/configuration.md) for the complete contract.
 
-Pick your provider, copy the block, set the env var, chat.
-
-**OpenAI**
+## CLI quick start
 
 ```bash
 export OPENAI_API_KEY=sk-...
-lapp provider add --id openai --model gpt-4o --yes
-lapp chat "Hello."
+lapp provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
+lapp default set --task chat --provider openai --model gpt-4o-mini --yes
+lapp models list --json
+lapp resolve --default chat --json
+lapp chat "Hello" --default chat
 ```
 
-**Anthropic**
+Refresh a configured remote model directory explicitly:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-lapp provider add --id anthropic --model claude-sonnet-4 --yes
-lapp chat "Hello."
+lapp models refresh --provider openai                 # preview
+lapp models refresh --provider openai --apply --yes   # append new models
 ```
 
-**DeepSeek** (OpenAI-compatible)
+Resolved credentials are never printed. For a newly entered raw key, the
+interactive CLI uses the current user's Vault by default; `--env NAME` keeps an
+externally managed environment reference instead.
 
-```bash
-export DEEPSEEK_API_KEY=sk-...
-lapp provider add --id deepseek --model deepseek-chat --yes
-lapp chat "Hello."
-```
-
-**Ollama** (local, no auth)
-
-```bash
-lapp provider add --id ollama --yes
-lapp models sync --provider ollama --apply --set-default --yes   # pull the model list
-lapp chat "Hello, Ollama."
-```
-
-## Use it from TypeScript
-
-```bash
-npm install @openlapp/lapp
-```
+## SDK quick start
 
 ```ts
-import { loadProfile, createLappClient, listModels } from "@openlapp/lapp";
+import {
+  createLappClient,
+  listModels,
+  loadProfile,
+  resolveConnection,
+} from "@openlapp/lapp";
 
 const profile = loadProfile();
-
-// Every available model, across all providers
 const models = listModels(profile);
 
-// Chat with the global default
-const client = createLappClient({ profile, resolveSecrets: true });
-const resp = await client.chat({ messages: [{ role: "user", content: "Hello!" }] });
-console.log(resp.text);
+const connection = await resolveConnection(
+  profile,
+  { default: "chat" },
+  { supportedProtocols: ["openai-responses", "openai-chat-completions"] },
+);
 
-// Stream
-for await (const ev of client.stream({ messages: [{ role: "user", content: "Hello!" }] })) {
-  if (ev.kind === "delta") process.stdout.write(ev.text);
-}
+// Use connection with your own upstream client, or use the convenience client:
+const client = createLappClient({ profile, default: "chat" });
+const response = await client.chat({
+  messages: [{ role: "user", content: "Hello" }],
+});
+
+console.log(models.length, connection.modelId, response.text);
 ```
+
+`resolveConnection` asynchronously resolves plaintext, `env://NAME`, or
+`vault://provider/credential` at call time and returns the selected protocol,
+canonical model ID, endpoint, headers, and authentication. The client resolves
+again immediately before each direct request, so Vault rotation is picked up
+without rebuilding the client.
 
 ## Supported protocols
 
-| Protocol | Chat | Stream | Tool calls | Model-list sync |
-| --- | --- | --- | --- | --- |
-| `openai-chat-completions` | yes | yes | yes | yes (`GET /models`) |
-| `openai-responses` | yes | yes | yes | yes (`GET /models`) |
-| `anthropic-messages` | yes | yes | yes | no public API; set `provider.links.models` to override |
+| Connection protocol | Direct chat client | Model discovery |
+|---------------------|--------------------|-----------------|
+| `openai-chat-completions` | Chat, stream, tools | `openai-models` |
+| `openai-responses` | Chat, stream, tools | `openai-models` |
+| `anthropic-messages` | Chat, stream, tools | `anthropic-models` |
+
+Profiles may contain other protocol IDs for applications that implement them.
+The bundled chat client returns `TargetResolutionError` with code
+`PROTOCOL_NOT_SUPPORTED` instead of guessing how to call them.
 
 ## Documentation
 
-- **[Getting started](docs/getting-started.md)** — install, first provider, first chat (start here)
-- **[CLI reference](docs/cli.md)** — every `lapp` command, flag, and exit code
-- **[SDK tour](docs/sdk.md)** — using `@openlapp/lapp` from TypeScript
-- [Configuration](docs/configuration.md) — profile anatomy, path resolution, multi-protocol providers
-- [Security](docs/security.md) — secret schemes, redaction, opt-in resolution
-- [Protocols](docs/protocols.md) — per-protocol behavior and capability inference
-- [Local providers](docs/local-providers.md) — Ollama, LM Studio, vLLM
-- [Troubleshooting](docs/troubleshooting.md) — typed errors, warnings, FAQ
-- [Migrating](docs/migrating.md) — changes and known limitations since v1.0.0
-- [API reference](packages/lapp/docs/api.md) · [CHANGELOG](CHANGELOG.md) · [中文文档](README_zh.md)
+- **[Getting started](docs/getting-started.md)** — the three consumption paths
+- **[CLI reference](docs/cli.md)** — commands, JSON output, and exit codes
+- **[SDK guide](docs/sdk.md)** — discovery, resolution, refresh, and direct calls
+- [Configuration](docs/configuration.md) — v1 JSON profile contract
+- [Security](docs/security.md) — trust boundary and credential handling
+- [Protocols](docs/protocols.md) — protocol selection and model discovery
+- [Local providers](docs/local-providers.md) — Ollama, LM Studio, and vLLM
+- [Troubleshooting](docs/troubleshooting.md) — errors and common fixes
+- [User agreement and risk disclosure](packages/lapp/USER_AGREEMENT.en.md) —
+  distribution template included in both packages
+- [API reference](packages/lapp/docs/api.md) · [CHANGELOG](CHANGELOG.md)
 
-## v1 known limitations
+## v1 boundaries
 
-- `keychain://` and `file://` secret schemes are parsed but not resolved (only `plaintext` and `env://`).
-- Capability inference for synced models is a best-effort heuristic (prefix + token match); providers that don't expose capability metadata can be augmented by editing `models.json` directly.
-- `err.raw` on chat errors is deep-scrubbed for common key shapes, but providers that embed credentials in non-string fields are not protected.
+- Secrets are plaintext, `env://NAME`, or `vault://provider/credential`.
+  Official SDK writes default to the current user's system Vault; plaintext
+  creation requires explicit opt-in.
+- Remote model refresh is explicit, non-destructive, and not a background cache.
+- LAPP does not protect credentials from another trusted process running as the
+  same OS user after that process explicitly resolves a connection.
 
 ## License
 

@@ -1,260 +1,313 @@
-# SDK tour
+# SDK guide
 
-`@openlapp/lapp` is the TypeScript SDK for LAPP. It reads, validates, writes, and manages `.lapp` profiles and sends requests directly to configured providers.
-
-## Install
+`@openlapp/lapp` implements the LAPP v1 local registry for TypeScript. It can
+load, validate, query, refresh, edit, and write profiles. Applications may use
+the resolved connection with their own upstream library or use the bundled
+direct-call client.
 
 ```bash
 npm install @openlapp/lapp
 ```
 
-Requires Node 18.18 or newer.
+Node.js 18.18 or newer is required.
 
-## Mental model
-
-```text
-.lapp profile
-  -> @openlapp/lapp SDK
-  -> protocol adapter
-  -> provider API
-```
-
-The SDK is the product; the CLI is only its first consumer. All profile logic belongs in the SDK.
-
-## Loading profiles
-
-### `loadProfile(options?)`
-
-Read and validate a `.lapp` tree. Resolution order: explicit `path` option → `LAPP_HOME` env var → `~/.lapp`.
+## Load and inspect
 
 ```ts
-import { loadProfile } from "@openlapp/lapp";
+import { inspectProfile, loadProfile } from "@openlapp/lapp";
 
-const profile = loadProfile();                          // default
-const profile = loadProfile({ path: "/etc/lapp" });     // explicit
-const profile = loadProfile({ skipValidate: true });    // parse-only
+const profile = loadProfile();
+const other = loadProfile({ path: "/etc/lapp" });
+const inspection = inspectProfile();
 ```
 
-`loadProfile` returns a normalized `LappProfile`. Providers with `enabled: false` are kept so writes can round-trip the on-disk file. Models with no `models.json` produce `models: null`.
+Resolution order is explicit `path`, `LAPP_HOME`, then `~/.lapp`.
 
-### `resolveLappRoot(explicit?)`
+`loadProfile()` returns only a validated, normalized `LappProfile`; invalid
+input throws `ProfileValidationError`. It retains disabled entries and contains
+no diagnostics or source-file metadata.
 
-Resolve the root directory without loading the profile.
+`inspectProfile({ path? })` is the recovery path for damaged profiles. It
+returns partial provider information and redacted diagnostics without exposing
+secret values.
+
+Use `validateProfile(profile)` to validate an in-memory profile and
+`resolveLappRoot(explicit?)` to resolve a root without loading it.
+
+## List models
 
 ```ts
-const root = resolveLappRoot();
+import { listModels } from "@openlapp/lapp";
+
+const enabled = listModels(profile);
+const openai = listModels(profile, { providerId: "openai" });
+const all = listModels(profile, { includeDisabled: true });
 ```
 
-### `inspectProfile(profile, { revealSecrets? })`
+`listModels()` is synchronous and pure: it performs no file/network I/O and
+does not resolve credentials. Each `ModelDescriptor` contains provider/model
+IDs, inherited or model-specific protocols, endpoint, enabled state, and local
+descriptive metadata.
 
-Human-friendly summary: redacted secrets, per-provider model list, diagnostics.
+## Select and resolve a connection
 
-```ts
-const summary = inspectProfile(profile);
-```
-
-`revealSecrets: true` is for trusted environments only.
-
-### `validateProfile(profile)`
-
-Run both JSON Schema (ajv) and semantic checks (duplicate aliases, global-ref existence, secret-scheme warnings, sensitive-header warnings). Returns `{ valid, diagnostics, errors, warnings, infos }`.
+Use the synchronous, pure selector when you need target metadata without
+touching a credential:
 
 ```ts
-const result = validateProfile(profile);
-```
+import { resolveConnection, selectConnection } from "@openlapp/lapp";
 
-## Managing profiles (pure, immutable)
-
-All mutation functions return a new `LappProfile` and never touch disk.
-
-| Function | Purpose |
-|----------|---------|
-| `createProfile(input)` | Empty in-memory profile (no disk write). |
-| `upsertProvider(profile, input)` | Insert or update a provider; preserves unspecified fields. |
-| `upsertModel(profile, input)` | Insert or update a model under a provider. |
-| `removeProvider(profile, id)` | Remove a provider and any default references to it. |
-| `removeModel(profile, { providerId, model })` | Remove by id or alias; clears any default that pointed at it. |
-| `replaceProviderModels(profile, id, models)` | Replace the whole `models.json` for a provider (sync flow). |
-| `setDefaultModelRef(profile, key, target)` | Set any default slot (`defaultModel`, `defaultEmbeddingModel`, ...). |
-| `setDefaultModel(profile, target)` | Set `defaultModel` (chat slot) — convenience wrapper. |
-| `isSupportedProtocol(protocol)` | True for the 3 v1 core protocols. |
-
-Example:
-
-```ts
-let profile = createProfile({ rootDir: "~/.lapp" });
-profile = upsertProvider(profile, {
-  id: "openai",
-  protocol: "openai-chat-completions",
-  baseUrl: "https://api.openai.com/v1",
-  auth: { secret: "env://OPENAI_API_KEY" },
-});
-profile = upsertModel(profile, {
-  providerId: "openai",
-  id: "gpt-4o",
-  type: "chat",
-  aliases: ["gpt4o"],
-});
-profile = setDefaultModel(profile, { providerId: "openai", model: "gpt-4o" });
-```
-
-## Planning and writing
-
-### `planChanges(before, after)`
-
-Compute a file-level create/modify/delete diff.
-
-```ts
-const plan = planChanges(before, after);
-```
-
-### `writeProfileAtomic(profile, { before? })`
-
-Validate in memory, then write atomically:
-
-1. Build complete content in memory.
-2. Validate before writing.
-3. Write to a hidden temporary file in the same directory as the target file.
-4. Close the temporary file.
-5. Rename it over the target path.
-6. On failure, remove only the temporary file.
-
-There is no backup, no rollback, and no temporary directory. Pass `options.before` so orphan `provider.json`/`models.json` files are unlinked after the write succeeds.
-
-```ts
-await writeProfileAtomic(profile, { before });
-```
-
-New files are written as `.json`. Existing `.jsonc` files are treated as `.json` write targets.
-
-## Secrets
-
-| Function | Purpose |
-|----------|---------|
-| `parseSecretRef(raw)` | Parse a `plaintext` / `env://NAME` / `keychain://` / `file://` string. |
-| `redactSecret(raw)` | Redact a secret for safe display. |
-| `resolveSecret(ref, { resolve, env })` | Returns the resolved value or an error. **Opt-in**; never reads `process.env` unless `resolve: true`. |
-
-Supported in v1: `plaintext` and `env://`. `keychain://` and `file://` are parsed but throw `UnsupportedSecretSchemeError` at runtime.
-
-```ts
-const ref = parseSecretRef("env://OPENAI_API_KEY");
-const value = resolveSecret(ref, { resolve: true });
-```
-
-See [security.md](security.md) for the full secret policy.
-
-## Client
-
-### `createLappClient(options)`
-
-Resolve a target and return a client bound to the appropriate protocol adapter.
-
-```ts
-const client = createLappClient({
+const plan = selectConnection(
   profile,
-  resolveSecrets: true,  // required to actually call a provider
-  env: { OPENAI_API_KEY: "sk-..." },  // optional override
-});
+  { providerId: "openai", model: "fast-chat" }, // ID or alias
+  { supportedProtocols: ["openai-responses", "openai-chat-completions"] },
+);
+
+const selected = selectConnection(profile, { default: "chat" });
 ```
 
-Target resolution priority:
+`selectConnection()` returns a `ConnectionPlan` with unresolved `auth` and its
+credential binding. It performs no file, environment, Vault, or network I/O.
 
-1. Explicit `provider` / `model` options.
-2. `global.defaultModel` (only if compatible).
-3. First enabled provider's first enabled model.
+When a trusted caller needs usable auth, resolve asynchronously:
 
-Options:
+```ts
+const explicit = await resolveConnection(
+  profile,
+  { providerId: "openai", model: "fast-chat" },
+  {
+    env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
+    vault: testVault,
+  },
+);
 
-- `provider`, `model` — explicit target
-- `resolveSecrets` — opt-in to resolve secrets
-- `allowUnauthenticated` — skip auth header for local/self-hosted providers
-- `env` — environment overrides
-- `fetchImpl` — custom `fetch` implementation
+const resolvedDefault = await resolveConnection(profile, { default: "chat" });
+```
 
-### Client methods
-
-| Method | Returns | Notes |
-|--------|---------|-------|
-| `client.chat(input)` | `Promise<LappResponse>` | Non-streaming. Throws if `input.stream: true` (use `stream()`). |
-| `client.rawChat(input)` | `Promise<unknown>` | Provider-native response. |
-| `client.stream(input)` | `AsyncIterable<LappStreamEventUnion>` | `delta` / `tool-call` / `usage` / `finish` / `error`. |
-| `client.executeWithTools(input, tools, handlers, options?)` | `Promise<{ text, turns, messages }>` | Multi-turn tool loop. |
-| `client.testConnection()` | `Promise<TestConnectionResult>` | Sends a 1-token ping. |
-| `client.providerId` / `client.model` / `client.protocol` | `string` | Resolved target. |
-
-### `LappResponse`
+The result contains:
 
 ```ts
 {
-  text: string;
-  provider: string;
-  model: string;
+  providerId: string;
+  modelId: string;             // canonical ID
   protocol: string;
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
-  finishReason?: string;
-  toolCalls?: ParsedToolCall[];
-  raw: unknown;  // the full provider response, untouched
+  baseUrl: string;
+  requestHeaders: Record<string, string>;
+  auth:
+    | { type: "none" }
+    | { type: "bearer"; secret: string }
+    | { type: "header"; name: string; secret: string }
+    | { type: "query"; name: string; secret: string };
 }
 ```
 
-### Streaming
+Options are `{ supportedProtocols?, env?, vault?, resolver? }`. Pass `env` to
+use an explicit source instead of `process.env`, `vault` to inject a
+`CredentialVault`, or `resolver` to replace both. A custom resolver takes
+precedence. The system Vault is opened lazily only for `vault://` references.
+
+The credential is resolved in memory, and the returned connection must be
+treated as sensitive. Disabled or ambiguous targets, missing defaults or
+credentials, unavailable Vault backends, binding mismatches, and protocol
+mismatches throw typed errors. Credential schemes never fall back to one
+another.
+
+## Use the credential Vault
 
 ```ts
-for await (const ev of client.stream({ messages })) {
-  if (ev.kind === "delta") process.stdout.write(ev.text);
-  if (ev.kind === "tool-call") console.log("tool:", ev.name, ev.arguments);
-  if (ev.kind === "usage") console.log("usage:", ev.inputTokens, ev.outputTokens);
-  if (ev.kind === "finish") console.log("finish:", ev.reason);
-  if (ev.kind === "error") console.error("error:", ev.message);
-}
+import {
+  createCredentialResolver,
+  openSystemCredentialVault,
+} from "@openlapp/lapp";
+
+const vault = await openSystemCredentialVault();
+const resolver = createCredentialResolver({ vault });
 ```
 
-## Profile query
+`openSystemCredentialVault()` opens an adapter for the current OS user's native
+credential store. It does not create an encrypted file and never falls back to
+an environment variable or plaintext. A missing native binary fails this call;
+an unavailable credential service may fail the first operation. Both use
+`CredentialError` code `VAULT_BACKEND_UNAVAILABLE`.
 
-### `listModels(profile, options?)`
+Vault references have the exact form
+`vault://<providerId>/<credentialId>`. System records use service
+`dev.lapp.vault.v1` and account `<providerId>/<credentialId>`.
 
-Flatten a profile into one record per model.
+`CredentialVault` exposes:
 
 ```ts
-const models = listModels(profile, { providerId: "openai" });
-// [{ providerId, modelId, protocol, baseUrl, type, capabilities, ... }, ...]
+await vault.put(reference, secret, binding, { overwrite: false });
+const secret = await vault.resolve(reference, binding);
+const status = await vault.status(reference, binding);
+const deleted = await vault.delete(reference);
 ```
 
-Options: `providerId`, `includeDisabled`, `includeDisabledModels`.
+The stored envelope is bound to the Provider ID, normalized exact origin (not
+the base URL path), and authentication type/name. Header names are normalized
+to lowercase; query parameter names remain case-sensitive. If any bound field
+changes, resolution fails with `VAULT_BINDING_MISMATCH`; record the credential
+again instead of silently rebinding it.
 
-## Model sync
+`createCredentialResolver({ env?, vault? })` handles plaintext,
+`env://NAME`, and `vault://provider/credential`. Its `resolve(raw, binding)`
+returns the usable secret, while `status(raw, binding)` reports scheme,
+availability, and (for existing Vault records) binding state without revealing
+the secret. It opens the system Vault lazily and does not cache plaintext.
+
+Vault protects credentials at rest. It is not an application sandbox: a
+compatible application running as the same OS user can receive the plaintext
+secret after successful resolution.
+
+## Refresh models
+
+```ts
+import { refreshModels, writeProfileAtomic } from "@openlapp/lapp";
+
+const abortController = new AbortController();
+const result = await refreshModels(profile, "openai", {
+  env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
+  vault,
+  signal: abortController.signal,
+});
+
+console.log(result.added, result.diagnostics);
+await writeProfileAtomic(result.nextProfile, { before: profile });
+```
+
+`refreshModels()` contacts one provider's configured discovery URL and returns
+`{ nextProfile, added, diagnostics }`. It never writes disk. The merge only
+fills missing display names and appends unknown IDs in sorted order; it never
+overwrites or removes existing models. Invalid HTTP/JSON/pagination throws
+`ModelRefreshError` and leaves the input untouched.
+
+Credential options are `{ env?, vault?, resolver? }`, with the same precedence
+and no-fallback rules as `resolveConnection()`. Tests may inject
+`options.fetch`. `options.signal` reaches every discovery request.
+Credential-bearing requests reject redirects.
+
+## Manage and write profiles
+
+Management functions are immutable:
 
 | Function | Purpose |
 |----------|---------|
-| `fetchProviderModels(profile, providerId, options?)` | Fetch the model list from a provider's `/models` endpoint. Throws `ModelSyncUnsupportedError` for Anthropic without `links.models`. |
-| `buildModelSyncResult(before, fetched, protocol)` | Compute `{ models, added, removed, updated }` diff. |
-| `syncProviderModels(profile, providerId, options?)` | Fetch + diff in one call. |
-| `applySyncedModels(before, result)` | Merge into a `ModelsConfig`, preserving user-curated fields. Marks the result with `__lappUpdatedAtSource: "sync"` so the writer re-stamps `updatedAt`. |
+| `createProfile({ rootDir })` | Create an empty in-memory profile. |
+| `upsertProvider(profile, input)` | Add or patch a provider; omitted fields are preserved. |
+| `upsertProviderWithCredential(profile, input, options?)` | Add or patch a Provider and apply the SDK's credential-storage default. |
+| `upsertModel(profile, input)` | Add or patch a model; omitted fields are preserved. |
+| `removeProvider(profile, id)` | Remove an unreferenced provider. |
+| `removeModel(profile, target)` | Remove an unreferenced model by ID or alias. |
+| `setDefault(profile, task, target)` | Store a canonical task default. |
 
-## Env export
+Use `planChanges(before, after)` for a file-level preview and
+`writeProfileAtomic(after, { before })` to validate and persist standard JSON.
+Writes reject path escape and invalid profiles. v1 assumes one writer.
 
-### `exportEnv(profile, { format, resolve?, allowPlaintext? })`
-
-Emit shell statements for a profile's secrets.
+For new raw credentials, use the asynchronous managed writer:
 
 ```ts
-const out = exportEnv(profile, { format: "bash", resolve: true, allowPlaintext: false });
+import { upsertProviderWithCredential } from "@openlapp/lapp";
+
+const result = await upsertProviderWithCredential(profile, {
+  id: "openai",
+  baseUrl: "https://api.openai.com/v1",
+  protocols: ["openai-responses"],
+  auth: {
+    type: "bearer",
+    credential: { secret: userInput },
+  },
+  models: [],
+}, { vault });
+
+// Vault is updated, but disk is not.
+await writeProfileAtomic(result.profile, { before: profile });
 ```
 
-`resolve: true` is required to read `process.env`; `allowPlaintext: true` is required to include plaintext secrets.
+Omitting `credential.storage` selects Vault storage and credential ID
+`default`. The SDK derives the binding from the final Provider configuration;
+the caller cannot supply an origin. Set `{ storage: "env", name: "NAME" }` to
+write an `env://NAME` reference without reading it. Set
+`{ secret, storage: "plaintext" }` only as an explicit opt-in; the result then
+contains a `PLAINTEXT_SECRET_IN_USE` warning.
 
-## Error types
+`upsertProviderWithCredential()` returns
+`{ profile, credentialRef?, warnings }` and never writes the Profile to disk.
+The lower-level synchronous `upsertProvider()` remains available for callers
+that already have an `AuthConfig`; it does not manage or resolve credentials.
 
-| Error | When thrown |
-|-------|-------------|
-| `TargetResolutionError` | Provider/model not found, all providers disabled, no enabled models. |
-| `UnsupportedProtocolError` | Provider's protocol is not one of the 3 v1 core protocols. |
-| `MissingEnvSecretError` | `env://NAME` and `process.env[NAME]` is unset. |
-| `UnsupportedSecretSchemeError` | `keychain://` or `file://` scheme (v1 limitation). |
-| `ModelSyncUnsupportedError` | Sync flow for a protocol without a public model list. |
-| `StreamingUnsupportedError` | The protocol adapter has no `parseStream`. |
+## Direct-call client
 
-## TypeScript definitions
+```ts
+import { createLappClient } from "@openlapp/lapp";
 
-`dist/index.d.ts` is the source of truth for types. For a symbol-by-symbol navigation index, see [packages/lapp/docs/api.md](../packages/lapp/docs/api.md).
+const client = createLappClient({
+  profile,
+  provider: "openai",
+  model: "gpt-4o-mini",
+  vault,
+  // Enable when provider content is written to a terminal or log.
+  redactSuccessfulSecrets: true,
+});
+
+const response = await client.chat({
+  messages: [{ role: "user", content: "Hello" }],
+  maxTokens: 200,
+});
+```
+
+Supply `provider` and `model` together, or omit both and use `default` (`chat`
+by default). The factory synchronously selects and validates the target, but it
+does not resolve credentials. Every provider operation resolves the current
+credential immediately before use; the client does not cache the resolved
+plaintext. A Vault rotation therefore takes effect on the next operation.
+Immediately before sending auth, the client verifies the final request origin
+again and uses `redirect: "error"`.
+
+The CLI always enables `redactSuccessfulSecrets` so a provider that echoes a
+Vault credential cannot place it on stdout. SDK callers can enable the same
+behavior; it is opt-in because it changes successful response content when the
+content literally contains the credential.
+
+Client methods:
+
+| Method | Result |
+|--------|--------|
+| `chat(input)` | Normalized `LappResponse`. |
+| `rawChat(input)` | Provider-native response. |
+| `stream(input)` | Async `delta`, `tool-call`, `usage`, `finish`, and `error` events. |
+| `executeWithTools(input, tools, handlers, options?)` | Complete tool-loop text, turn count, and transcript. |
+| `testConnection()` | Small direct request result. |
+
+`ChatInput.extra` may add provider-native fields, but cannot override target,
+messages/input, stream, tools, or authentication fields. `AbortSignal` is
+forwarded to the request. Tool arguments must parse as an object and satisfy
+the tool JSON Schema before a handler executes.
+
+## Errors
+
+Public typed errors are `ProfileValidationError`, `TargetResolutionError`,
+`CredentialError`, `MissingEnvSecretError`, `ModelRefreshError`, and
+`StreamingUnsupportedError`. No protocol intersection uses
+`TargetResolutionError.code === "PROTOCOL_NOT_SUPPORTED"`.
+
+Use the stable `CredentialError.code` rather than matching its redacted
+message:
+
+```text
+INVALID_SECRET_REFERENCE
+UNSUPPORTED_SECRET_SCHEME
+ENV_SECRET_MISSING
+VAULT_BACKEND_UNAVAILABLE
+VAULT_CREDENTIAL_NOT_FOUND
+VAULT_CREDENTIAL_EXISTS
+VAULT_RECORD_INVALID
+VAULT_BINDING_MISMATCH
+VAULT_ACCESS_DENIED
+VAULT_OPERATION_FAILED
+CREDENTIAL_UPDATE_PARTIAL_FAILURE
+```
+
+Native causes and credential values are never exposed in these public errors.
+
+For the complete export index, see the [API reference](../packages/lapp/docs/api.md).

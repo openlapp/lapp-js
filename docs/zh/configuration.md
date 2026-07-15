@@ -1,228 +1,165 @@
-# 配置文件
+# 配置
 
-LAPP 配置是一个目录树（通常命名为 `.lapp` 或 `~/.lapp`），用来描述提供者、模型、默认设置和元数据。
+LAPP Profile 是一个标准 JSON 目录树，用来描述上游 Provider、本地权威模型目录
+以及可选的任务默认值。
 
-## 配置路径解析
+## Profile 位置
 
-SDK 和 CLI 按以下顺序解析配置根目录：
+SDK 和 CLI 按以下顺序解析根目录：
 
-1. 显式传入的路径参数或 `path` 选项。
-2. `LAPP_HOME` 环境变量。
+1. 显式路径参数或 `{ path }` 选项。
+2. `LAPP_HOME`。
 3. `~/.lapp`。
 
-你也可以调用 `resolveLappRoot()` 在不加载配置的情况下获取解析后的路径。
+只接受 `.json` 文件。每个文件都使用 `"schemaVersion": "1.0"`。
 
-## `.lapp/` 目录结构
+## 目录结构
 
 ```text
 ~/.lapp/
-├── manifest.json
 ├── global.json
-├── providers/
-│   ├── openai/
-│   │   ├── provider.json
-│   │   └── models.json
-│   └── anthropic/
-│       ├── provider.json
-│       └── models.json
+└── providers/
+    ├── openai/
+    │   ├── provider.json
+    │   └── models.json
+    └── local/
+        ├── provider.json
+        └── models.json
 ```
 
-### `manifest.json`
+设置默认值前可以没有 `global.json`。每个 Provider 都必须有 `models.json`；空的
+权威目录写作 `{"schemaVersion":"1.0","models":[]}`。
 
-配置版本和元数据。
+Provider 目录名必须与 `provider.json#id` 完全一致。Provider ID 必须匹配
+`^[a-z0-9][a-z0-9._-]{0,63}$`，且不能是 Windows 保留名。
+
+## `provider.json`
 
 ```json
 {
-  "schemaVersion": "1.0.0",
-  "name": "我的 LAPP 配置"
-}
-```
-
-### `providers/<id>/provider.json`
-
-提供者配置。
-
-```json
-{
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.0",
   "id": "openai",
-  "protocol": "openai-chat-completions",
+  "name": "OpenAI",
+  "enabled": true,
   "baseUrl": "https://api.openai.com/v1",
+  "protocols": ["openai-responses", "openai-chat-completions"],
   "auth": {
-    "secret": "env://OPENAI_API_KEY"
+    "type": "bearer",
+    "secret": "vault://openai/default"
+  },
+  "requestHeaders": {
+    "OpenAI-Organization": "org-example"
+  },
+  "modelDiscovery": {
+    "protocol": "openai-models",
+    "url": "https://api.openai.com/v1/models"
   }
 }
 ```
 
-### `providers/<id>/models.json`
+必填字段为 `schemaVersion`、`id`、`baseUrl`、`protocols` 和 `auth`。可选字段为
+`name`、`enabled`、`requestHeaders`、`modelDiscovery` 与 `extensions`。
 
-每个提供者的模型列表。
+`protocols` 是有序、非空的协议 ID 列表。模型可以缩小该列表。解析连接时，SDK
+选择应用支持的第一个候选协议，不进行协议转换。
+
+### 认证
+
+认证是严格的 tagged union：
+
+```json
+{ "type": "none" }
+{ "type": "bearer", "secret": "vault://openai/default" }
+{ "type": "header", "name": "x-api-key", "secret": "env://ANTHROPIC_API_KEY" }
+{ "type": "query", "name": "key", "secret": "provider-key-in-plaintext" }
+```
+
+密钥只能是 plaintext、`env://NAME` 或
+`vault://<providerId>/<credentialId>`。Vault 引用必须正好包含两个可移植 ID，
+其中 provider segment 必须等于当前 Provider 的 `id`。百分号编码、query、
+fragment、额外路径、`keychain://`、`file://` 与未知 scheme 都不合法。
+Plaintext 会留在 `provider.json` 中，因此虽然允许使用，但会产生警告。
+
+官方 SDK 新增原始凭据时默认写入当前 OS 用户的系统凭据库，Profile 中只保存
+Vault 引用。同一 OS 用户下所有兼容应用都可能使用这份凭据。受保护记录绑定
+Provider ID、标准化 origin 和认证 type/name；这些字段发生变化后必须显式重新
+保存凭据。
+
+`requestHeaders` 只用于非秘密静态请求头。名称必须是合法 HTTP token，值不能
+包含 CR/LF，而且不能配置认证或 Cookie 请求头。名称按大小写不敏感规则必须唯一，
+也不能与 header auth 名称重复。
+
+### 模型发现
+
+可选的 `modelDiscovery` 支持两种响应合同：
+
+- `openai-models`
+- `anthropic-models`
+
+发现 URL 必须与 `baseUrl` 同源。远端地址必须使用 HTTPS；只有 loopback 主机可以
+使用 HTTP。携带认证的发现请求不会跟随重定向。
+
+## `models.json`
 
 ```json
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.0",
   "models": [
     {
-      "id": "gpt-4o",
-      "aliases": ["gpt4o"],
+      "id": "gpt-4o-mini",
+      "name": "GPT-4o mini",
+      "aliases": ["fast-chat"],
+      "protocols": ["openai-responses", "openai-chat-completions"],
       "type": "chat",
-      "capabilities": ["text", "tools", "vision", "streaming"]
+      "inputModalities": ["text", "image"],
+      "outputModalities": ["text"],
+      "capabilities": ["streaming", "tools"],
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384
     }
   ]
 }
 ```
 
-### `global.json`
+`models.json` 是本地权威数据，不是生成式缓存。模型 ID 可以包含 `/`，但不能是
+空白字符串或包含控制字符。同一 Provider 的所有模型 ID 和 alias 共用唯一命名
+空间。
 
-按任务类型的全局默认设置。
+`model.protocols` 可省略；省略时继承 Provider 协议，存在时必须是非空子集。其他
+描述字段都是可选的。实现特有数据应放在 `extensions` 中。
 
-```json
-{
-  "schemaVersion": "1.0.0",
-  "defaultModel": {
-    "providerId": "openai",
-    "model": "gpt-4o"
-  }
-}
-```
+`models refresh` 只会按 ID 排序追加新的远端模型，并可补充当前缺失的显示名称。
+它保留已有顺序和字段，也不会删除已从上游消失的模型。
 
-## 提供者字段
-
-### `protocol` 与 `protocols`
-
-`protocol` 是旧版的单个协议字符串。新配置应优先使用 `protocols: [...]`，它是一个按偏好排序的列表，SDK 会选择第一个支持的条目。
+## `global.json`
 
 ```json
 {
-  "id": "openai",
-  "protocols": [
-    {
-      "id": "openai-responses",
-      "baseUrl": "https://api.openai.com/v1",
-      "requestHeaders": { "OpenAI-Beta": "responses=v1" }
-    },
-    {
-      "id": "openai-chat-completions",
-      "baseUrl": "https://api.openai.com/v1"
+  "schemaVersion": "1.0",
+  "defaults": {
+    "chat": {
+      "providerId": "openai",
+      "modelId": "gpt-4o-mini"
     }
-  ]
-}
-```
-
-两者同时存在时，`protocols` 优先。
-
-### `baseUrl`
-
-- `baseUrl` 不应以 `/` 结尾，SDK 会发出警告。
-- OpenAI 兼容适配器不会自动追加 `/v1`，需要时请直接写在 `baseUrl` 里。
-- Anthropic 适配器仅当 `/v1` 是最后一个独立段时才会去重。
-
-### `auth`
-
-- `bearer`（默认）— 发送 `Authorization: Bearer <secret>`。
-- `header` — 在自定义头中发送密钥。
-- `queryParam` — 把密钥附加到查询字符串（并移除头认证，避免在 URL 和头中同时泄露）。
-- `none` — 不发送认证头；与 `allowUnauthenticated` 配合用于本地提供者。
-
-```json
-{
-  "auth": {
-    "type": "header",
-    "header": "X-Api-Key",
-    "secret": "env://API_KEY"
   }
 }
 ```
 
-### `requestHeaders`
+默认值 key 是任务名。值只能使用 canonical 模型 ID，不能使用 alias，而且必须引用
+启用的 Provider 和模型。删除被引用的 Provider 或模型前，必须先修改对应默认值。
 
-用户自定义的每个请求都会带上的头。认证相关头（`authorization`、`x-api-key`）会在适配器添加自己的认证前被大小写不敏感地移除，避免用户定义的 `X-Api-Key` 与适配器认证头冲突。
+## 禁用项与扩展
 
-### `links.models`
+禁用的 Provider 和模型仍保留在内存中，以便原样写回。`listModels()` 默认不返回
+它们，`resolveConnection()` 也会拒绝解析它们。
 
-为没有公开 `/models` 端点的协议覆盖模型列表 URL（例如 Anthropic）。
+核心对象拒绝未知字段。实现特有字段统一放入 `extensions` 对象。
 
-```json
-{
-  "links": {
-    "models": "https://api.anthropic.com/v1/models"
-  }
-}
-```
+## 写入
 
-## 模型字段
-
-| 字段 | 含义 |
-|------|------|
-| `id` | 模型标识符。 |
-| `aliases` | 别名，可用于 `createLappClient({ model: "alias" })`。 |
-| `type` | `chat`、`embedding`、`image`、`tts`、`video`。 |
-| `capabilities` | 能力字符串数组，例如 `text`、`tools`、`vision`、`streaming`、`image-generation`。 |
-| `inputModalities` / `outputModalities` | 可选的模态列表。 |
-| `contextWindow` / `maxOutputTokens` | 可选的模型限制。 |
-| `enabled` | `false` 会保留条目但跳过运行时选择。 |
-| `source` | `provider`（来自同步）或 `manual`（用户添加）。 |
-
-## 全局默认
-
-五个默认槽位对应 CLI 的 `--kind`：
-
-| CLI `--kind` | 全局槽位 |
-|--------------|----------|
-| `chat` | `defaultModel` |
-| `embedding` | `defaultEmbeddingModel` |
-| `image` | `defaultImageModel` |
-| `tts` | `defaultTextToSpeechModel` |
-| `video` | `defaultVideoModel` |
-
-## 禁用条目
-
-`enabled: false` 的提供者或模型会保留在内存配置中，以便写回时还原磁盘文件。它们会被以下功能跳过：
-
-- `createLappClient` 目标解析
-- `exportEnv`
-- `listModels`（除非设置 `includeDisabled` / `includeDisabledModels`）
-
-## JSON 与 JSONC
-
-- SDK 读取 `.json` 和 `.jsonc` 文件。
-- 新文件以 `.json` 写入。
-- v1 不保留注释。
-
-## 原子写入
-
-`writeProfileAtomic` 对每个文件遵循以下规则：
-
-1. 在内存中构建完整内容。
-2. 写入前验证。
-3. 写到目标文件同目录的隐藏临时文件。
-4. 关闭临时文件。
-5. 通过重命名覆盖目标文件。
-6. 失败时仅删除临时文件。
-
-这是崩溃安全保证，不是备份系统。没有备份、没有回滚、没有临时目录。
-
-## 多协议示例
-
-```json
-{
-  "schemaVersion": "1.0.0",
-  "id": "openai",
-  "protocols": [
-    {
-      "id": "openai-responses",
-      "baseUrl": "https://api.openai.com/v1"
-    },
-    {
-      "id": "openai-chat-completions",
-      "baseUrl": "https://api.openai.com/v1"
-    }
-  ],
-  "baseUrl": "https://api.openai.com/v1",
-  "auth": {
-    "secret": "env://OPENAI_API_KEY"
-  }
-}
-```
-
-SDK 会优先尝试 `openai-responses`，不支持时再回退到 `openai-chat-completions`。
+低级 SDK 管理函数是不可变纯函数，不会自行写盘。异步高级函数
+`upsertProviderWithCredential()` 默认把原始密钥写入 Vault；选择明文必须显式
+指定 storage，并会返回警告。该函数返回新的内存 Profile；检查
+`planChanges()` 后仍需显式调用 `writeProfileAtomic()`。每个变化文件都会先验证，
+再写入同目录临时文件，执行 fsync 后重命名。v1 假定同一时刻只有一个写者，
+不提供 Profile 级事务或备份。

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "source": "https://github.com/openlapp/lapp",
+  "canonicalCommit": "5b6b4bd47b1d16cbede43d821046fc89e87c9689",
+  "lappSchemaVersion": "1.0",
+  "schemas": {
+    "global.schema.json": "4aa6d5f9676ee7f7a88ae733adb0ac778c3fa6f7f955ec58936f125a61b1a661",
+    "models.schema.json": "f0a5f1be6e30f1fc8790be8cc46c2e4e6c41df4cc505d10b3eb3f22b9d63c6c0",
+    "provider.schema.json": "f8ba24dda074270288584d8e3fba1bdbc75aa1c27d7dbbb9db041d6fd7ee3fc5"
+  },
+  "documents": {
+    "USER_AGREEMENT.en.md": "1fafde545644ab62b79c5f572504d88edc8000f7365559b508872379672e85b0",
+    "USER_AGREEMENT.zh-CN.md": "3f40e2da2616dab432c08234f15a8556d732b4e1e6a6a17bd1965e62db82c6d7",
+    "spec.en.md": "6c97b49a7cd8d827ab55de55b09a623de9b9ba6afbc744453d2468699e6a69d7",
+    "spec.zh-CN.md": "19b0aeba71c396250e890f7039ce49b00dc500668a28007af561e9c16dcc58a0"
+  }
+}

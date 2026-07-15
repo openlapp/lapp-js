@@ -1,177 +1,147 @@
 # Getting started
 
-`lapp-js` lets you describe your AI providers in one local profile, then call them from the terminal (`@openlapp/cli`) or from TypeScript (`@openlapp/lapp`).
+LAPP lets AI applications share one local provider and model registry. The
+application still sends requests directly to the selected upstream API.
 
-```text
-.lapp profile  →  @openlapp/lapp SDK  →  protocol adapter  →  provider API
-```
+Choose the smallest integration that fits your application:
 
-It is a **client, not a gateway**: no server, no proxying, no billing — your process talks to the provider directly.
+1. Read the JSON profile and implement the LAPP rules yourself.
+2. Use `@openlapp/lapp` from TypeScript.
+3. Invoke `lapp` and consume its stable JSON output.
 
 ## Install
 
 ```bash
-npm install -g @openlapp/cli     # the CLI
-npm install @openlapp/lapp       # the SDK (in a project)
+npm install @openlapp/lapp
+npm install -g @openlapp/cli
 ```
 
-Requires Node 18.18 or newer.
+Node.js 18.18 or newer is required.
 
-## 1 · Configure a provider (once)
+## Create a profile
 
-A profile is just a directory (by default `~/.lapp`) holding a few JSON files. The fastest way to create one is `lapp provider add`, which registers a provider and (with `--model`) sets your default model in one command. For well-known providers, a **preset** fills in the protocol, base URL, and suggested secret automatically.
-
-**OpenAI** — set your key, then add:
+The CLI is the quickest way to create the standard Provider file pair.
+`global.json` is created when you set a default. Presets fill in known
+endpoints, protocols, auth shape, and model-discovery URL.
 
 ```bash
 export OPENAI_API_KEY=sk-...
-lapp provider add --id openai --model gpt-4o --yes
+lapp provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
+lapp validate
+lapp models list
 ```
 
-`lapp provider add` takes:
-- `--id <id|preset>` — a name **you** pick (used to address this provider later), or a known preset id like `openai` / `anthropic` / `ollama` (`lapp presets` lists them all).
-- `--protocol` / `--base-url` — how to talk to it. Required for custom providers; **omitted when a preset supplies them**.
-- `--secret env://NAME` — read the key from an environment variable (recommended). A preset fills the conventional `env://<PROVIDER>_API_KEY` if you omit it. Plaintext also works but stays on disk.
-- `--model` — register a model **and** make it the default in one step.
-- `--yes` — apply the change (write commands show a plan first; use `--dry-run` to preview).
-
-## 2 · Chat (every time)
+For a custom upstream, provide the fields explicitly:
 
 ```bash
-lapp chat "Say hi in five words."          # uses the default model
-lapp chat --stream "Count to ten"          # stream the reply
+lapp provider add \
+  --id custom \
+  --base-url https://ai.example.com/v1 \
+  --protocol openai-chat-completions \
+  --env CUSTOM_AI_KEY \
+  --models-protocol openai-models \
+  --models-url https://ai.example.com/v1/models \
+  --model chat-model \
+  --yes
 ```
 
-Pick a different target inline — `provider/model` as the first word:
+For an interactive raw-key flow, omit `--env`: the CLI prompts without echo and
+stores the key as `vault://<provider>/default`. Non-interactive raw input uses
+`--vault <credential-id> --stdin`. Use `--no-auth` for a loopback provider that
+requires no credential. Write commands preview their file plan and require
+`--yes`; `--dry-run` performs no profile or Vault write.
+
+## Keep the local model directory current
+
+`models.json` remains authoritative. Refresh is explicit and non-destructive:
 
 ```bash
-lapp chat openai/gpt-4o-mini "Quick one."  # inline target
+lapp models refresh --provider openai                 # preview additions
+lapp models refresh --provider openai --apply --yes   # write additions
 ```
 
-…or with flags (handy when the message itself contains a slash):
+Refresh preserves every existing model and local field. Set a default
+separately:
 
 ```bash
-lapp chat "Compare A/B testing" --provider openai --model gpt-4o-mini
+lapp default set --task chat --provider openai --model gpt-4o-mini --yes
 ```
 
-You can also **change the default** and then keep using the one-liner:
+## Option 1: read the profile directly
 
-```bash
-lapp default set --provider openai --model gpt-4o-mini --kind chat --yes
-lapp chat "Now this uses gpt-4o-mini."
-```
+Applications in any language may read `global.json`, `provider.json`, and
+`models.json`. A conforming implementation must still enforce the schemas and
+semantic rules: directory/ID equality, unique IDs and aliases, enabled state,
+protocol selection, same-origin discovery, strict auth, secret-reference
+grammar and canonical defaults. Implementations that do not provide a Vault
+backend must still recognize `vault://` and fail explicitly only when a remote
+operation needs that credential.
 
-## 3 · Add a second provider
+This route is useful when a TypeScript dependency or subprocess is undesirable.
+See [Configuration](configuration.md) for the complete file contract.
 
-`lapp provider add` appends to an existing profile. Use `--force` if you instead want to reset the profile to just the new provider.
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-lapp provider add --id anthropic --model claude-sonnet-4 --yes
-```
-
-Now `lapp chat "Hi"` routes to the most recently relevant default, and `lapp chat openai/gpt-4o "Hi"` reaches OpenAI.
-
-## 4 · Look around
-
-```bash
-lapp inspect              # human-readable summary (secrets redacted)
-lapp validate             # structural + semantic checks
-lapp doctor               # validate + can every enabled provider become a client?
-lapp ping openai/gpt-4o   # 1-token test request
-lapp presets              # list built-in provider presets
-```
-
-## Provider recipes
-
-Two ways to add a provider — preset (one line) or fully explicit:
-
-```bash
-# Preset
-lapp provider add --id openai --model gpt-4o --yes
-
-# Fully explicit (custom/self-hosted)
-lapp provider add --id my-proxy --protocol openai-chat-completions \
-  --base-url https://my-proxy.example.com/v1 --secret env://MY_PROXY_KEY --yes
-```
-
-Common `--protocol` and `--base-url` values (for the explicit form):
-
-| Provider | `--protocol` | `--base-url` | Auth |
-|----------|--------------|--------------|------|
-| OpenAI | `openai-chat-completions` | `https://api.openai.com/v1` | `env://OPENAI_API_KEY` |
-| OpenAI Responses | `openai-responses` | `https://api.openai.com/v1` | `env://OPENAI_API_KEY` |
-| Anthropic | `anthropic-messages` | `https://api.anthropic.com` | `env://ANTHROPIC_API_KEY` |
-| DeepSeek | `openai-chat-completions` | `https://api.deepseek.com/v1` | `env://DEEPSEEK_API_KEY` |
-| OpenRouter | `openai-chat-completions` | `https://openrouter.ai/api/v1` | `env://OPENROUTER_API_KEY` |
-| Ollama (local) | `openai-chat-completions` | `http://localhost:11434/v1` | `--no-auth` |
-| LM Studio (local) | `openai-chat-completions` | `http://localhost:1234/v1` | `--no-auth` |
-| vLLM (local) | `openai-chat-completions` | `http://localhost:8000/v1` | `--no-auth` |
-
-Notes:
-- `lapp-js` never auto-appends `/v1` for OpenAI-compatible providers — include it in `--base-url` if your provider needs it. Don't end `--base-url` with `/`.
-- Anthropic's adapter dedups a trailing `/v1` only when it is the sole last segment.
-- For local servers, pass `--no-auth` to skip the auth header. Full walkthrough: [local-providers.md](local-providers.md).
-
-### Pull the model list from the provider
-
-For OpenAI-compatible providers, sync the model list from their `/models` endpoint:
-
-```bash
-lapp models sync --provider ollama                 # preview
-lapp models sync --provider ollama --apply --yes   # write it in
-lapp models sync --provider ollama --apply --set-default --yes   # write + set first chat model as default
-```
-
-Anthropic has no public model-list endpoint; set `provider.links.models` to point at one (see [protocols.md](protocols.md)).
-
-## From TypeScript
+## Option 2: use the TypeScript SDK
 
 ```ts
-import { loadProfile, createLappClient, listModels } from "@openlapp/lapp";
+import {
+  listModels,
+  loadProfile,
+  refreshModels,
+  resolveConnection,
+} from "@openlapp/lapp";
 
 const profile = loadProfile();
 
-// Every available model, across all providers
-const models = listModels(profile);
+const models = listModels(profile, { providerId: "openai" });
 
-// Chat with the global default
-const client = createLappClient({ profile, resolveSecrets: true });
-const resp = await client.chat({ messages: [{ role: "user", content: "Hello!" }] });
-console.log(resp.text);
+const connection = await resolveConnection(
+  profile,
+  { providerId: "openai", model: "gpt-4o-mini" },
+  { supportedProtocols: ["openai-responses", "openai-chat-completions"] },
+);
 
-// Stream
-for await (const ev of client.stream({ messages: [{ role: "user", content: "Hello!" }] })) {
-  if (ev.kind === "delta") process.stdout.write(ev.text);
-}
+// connection contains the canonical model id, endpoint, headers and resolved auth.
 
-// Target a specific provider/model
-const cc = createLappClient({ profile, provider: "anthropic", model: "claude-sonnet-4", resolveSecrets: true });
+const preview = await refreshModels(profile, "openai");
+console.log(preview.added);
+// Persist preview.nextProfile only after your application chooses to apply it.
 ```
 
-`resolveSecrets: true` is required to actually call a provider — the SDK never reads `process.env` unless you opt in. See [sdk.md](sdk.md) for the full API.
+`listModels()` is pure and performs no I/O or secret resolution.
+`resolveConnection()` asynchronously resolves the selected credential.
+`refreshModels()`
+contacts exactly one configured discovery endpoint and returns a new in-memory
+profile without writing disk.
 
-## Supported protocols
+The SDK also offers `createLappClient()` for direct chat calls:
 
-| Protocol | Chat | Stream | Tool calls | Model-list sync |
-| --- | --- | --- | --- | --- |
-| `openai-chat-completions` | yes | yes | yes | yes (`GET /models`) |
-| `openai-responses` | yes | yes | yes | yes (`GET /models`) |
-| `anthropic-messages` | yes | yes | yes | no public API; set `provider.links.models` to override |
+```ts
+import { createLappClient } from "@openlapp/lapp";
 
-## Where to go next
+const client = createLappClient({ profile, default: "chat" });
+const response = await client.chat({
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(response.text);
+```
 
-- [CLI reference](cli.md) — every `lapp` command, flag, and exit code
-- [SDK tour](sdk.md) — how to use `@openlapp/lapp` from TypeScript
-- [Configuration](configuration.md) — profile anatomy, path resolution, multi-protocol providers
-- [Security](security.md) — secret schemes, redaction, and opt-in resolution
-- [Protocols](protocols.md) — per-protocol behavior and capability inference
-- [Local providers](local-providers.md) — Ollama, LM Studio, vLLM
-- [Troubleshooting](troubleshooting.md) — typed errors, warnings, and FAQ
-- [Migrating](migrating.md) — changes and known limitations since v1.0.0
+## Option 3: consume CLI JSON
 
-## v1 known limitations
+```bash
+lapp models list --json
+lapp resolve --default chat --protocol openai-responses --json
+```
 
-- `keychain://` and `file://` secret schemes are parsed but not resolved (only `plaintext` and `env://`).
-- Capability inference for synced models is a best-effort heuristic (prefix + token match); providers that don't expose capability metadata can be augmented by editing `models.json` directly.
-- `err.raw` on chat errors is deep-scrubbed for common key shapes, but providers that embed credentials in non-string fields are not protected.
+Machine output is one document shaped as `{"version":1,"data":...}`. The CLI
+never emits a resolved credential; `resolve` reports its scheme and status, and
+`credential status` checks a known Vault reference without revealing it. See
+the [CLI reference](cli.md) for exit codes and the exact command surface.
+
+## Next steps
+
+- [SDK guide](sdk.md)
+- [Configuration](configuration.md)
+- [Security](security.md)
+- [Protocols](protocols.md)
+- [Local providers](local-providers.md)
+- [Troubleshooting](troubleshooting.md)

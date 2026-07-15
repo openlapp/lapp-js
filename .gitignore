@@ -3,4 +3,5 @@ dist/
 *.tsbuildinfo
 .vitest-cache/
 coverage/
+.npm-cache/
 .learnings

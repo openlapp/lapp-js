@@ -1,76 +1,97 @@
 # Protocols
 
-`lapp-js` supports three provider protocols in v1. Each maps to a protocol adapter that builds provider-native requests and normalizes responses.
+LAPP protocol IDs tell an application which upstream API contract a connection
+uses. LAPP discovers and resolves that connection; it does not translate one
+protocol into another.
 
-## Supported protocols
+## Selection
 
-| Protocol | Chat | Stream | Tool calls | Model-list sync |
-| --- | --- | --- | --- | --- |
-| `openai-chat-completions` | yes | yes | yes | yes (`GET /models`) |
-| `openai-responses` | yes | yes | yes | yes (`GET /models`) |
-| `anthropic-messages` | yes | yes | yes | no public API; set `provider.links.models` to override |
-
-## `openai-chat-completions`
-
-Posts to `{baseUrl}/chat/completions` with a bearer token in the `Authorization` header.
-
-- The SDK never auto-appends `/v1`. Include it in `baseUrl` if your provider needs it.
-- Model sync uses `GET {baseUrl}/models`.
-- Works with any OpenAI-compatible server, including Ollama, LM Studio, and vLLM.
-
-## `openai-responses`
-
-Maps simple chat input to the OpenAI Responses API.
-
-- Posts to `{baseUrl}/responses`.
-- v1.0.0 preserves `assistant` history as `assistant` (not remapped to `developer`).
-- Model sync uses `GET {baseUrl}/models`.
-
-## `anthropic-messages`
-
-Maps chat messages to the Anthropic Messages API.
-
-- Posts to `{baseUrl}/v1/messages` with `x-api-key` and `anthropic-version` headers.
-- The adapter dedups a trailing `/v1` from `baseUrl` only when it is the sole last segment.
-- There is no public model-list endpoint; set `provider.links.models` to enable sync.
-
-## Capability inference
-
-When syncing models from a provider, capabilities are inferred with a best-effort heuristic based on model id prefixes and token matches. For example, a model whose id contains `vision` may receive the `vision` capability.
-
-Providers that do not expose capability metadata can be augmented by editing `models.json` directly after syncing.
-
-## Multi-protocol providers
-
-A provider can declare multiple protocols in preference order:
+A provider declares an ordered string list:
 
 ```json
 {
-  "id": "openai",
-  "protocols": [
-    { "id": "openai-responses", "baseUrl": "https://api.openai.com/v1" },
-    { "id": "openai-chat-completions", "baseUrl": "https://api.openai.com/v1" }
-  ]
+  "protocols": ["openai-responses", "openai-chat-completions"]
 }
 ```
 
-The SDK picks the first supported entry. Per-protocol `baseUrl` and `requestHeaders` are merged over provider-level values.
-
-## Local / self-hosted providers
-
-Any protocol that posts to an OpenAI-compatible endpoint works against local servers. The typical setup is:
+A model may declare a non-empty subset:
 
 ```json
 {
-  "id": "ollama",
-  "protocol": "openai-chat-completions",
-  "baseUrl": "http://localhost:11434/v1",
-  "auth": { "type": "none" }
+  "id": "gpt-4o-mini",
+  "protocols": ["openai-responses"]
 }
 ```
 
-In the CLI, use `--no-auth` with `lapp provider add` (or the `ollama`/`lm-studio`/`vllm` presets, which set it for you). See [local-providers.md](local-providers.md) for step-by-step examples.
+`resolveConnection()` uses the model list when present, otherwise the provider
+list. It selects the first candidate contained in the caller's
+`supportedProtocols`; without that option it selects the first candidate.
+No intersection produces `TargetResolutionError` with code
+`PROTOCOL_NOT_SUPPORTED`.
 
-## Unsupported protocols
+Protocol entries are strings. Endpoint, authentication, and static headers are
+provider-level fields.
 
-If a provider's protocol is not supported, the SDK throws `UnsupportedProtocolError`. Use `isSupportedProtocol(protocol)` to check at runtime.
+## Bundled direct-call protocols
+
+`createLappClient()` implements three chat protocols:
+
+| Protocol | Request endpoint | Chat | Stream | Tools |
+|----------|------------------|------|--------|-------|
+| `openai-chat-completions` | `{baseUrl}/chat/completions` | yes | yes | yes |
+| `openai-responses` | `{baseUrl}/responses` | yes | yes | yes |
+| `anthropic-messages` | `{baseUrl}/v1/messages` | yes | yes | yes |
+
+`baseUrl` is used as configured; OpenAI-compatible adapters do not insert
+`/v1`. Endpoint paths are appended through URL pathname handling, so configured
+query parameters remain intact. The Anthropic request uses `max_tokens: 4096` when the caller omits a
+value and includes `anthropic-version: 2023-06-01`.
+
+Authentication comes entirely from the provider's strict `auth` object. It is
+not implied by a protocol ID.
+
+Applications may store and resolve other valid protocol IDs. Pass the protocols
+your application implements through `resolveConnection(..., { supportedProtocols })`.
+The bundled client supplies its own three-protocol set and reports a typed
+target/protocol error when no declared protocol is usable; it never guesses an
+adapter.
+
+## Model-discovery protocols
+
+Model discovery is configured independently from connection protocols:
+
+```json
+{
+  "modelDiscovery": {
+    "protocol": "openai-models",
+    "url": "https://api.example.com/v1/models"
+  }
+}
+```
+
+- **`openai-models`** requires
+  `{ "data": [{ "id": "...", "name"?: "..." }] }` and has no pagination.
+- **`anthropic-models`** requires
+  `{ "data": [{ "id": "...", "display_name"?: "..." }], "has_more"?: boolean, "last_id"?: string }`
+  and continues with `after_id=<last_id>`.
+
+The SDK validates every page strictly. Malformed JSON, malformed entries,
+duplicate IDs, non-advancing cursors, and HTTP errors fail the refresh without
+changing the profile.
+
+Discovery URL and `baseUrl` must have the same origin. Remote discovery uses
+HTTPS; loopback may use HTTP. Credential-bearing requests use
+`redirect: "error"`.
+
+## Refresh semantics
+
+`refreshModels()` returns a new in-memory profile and never writes disk. It:
+
+- preserves current model order and fields;
+- fills a missing display name when the remote directory provides one;
+- appends previously unknown IDs in sorted order;
+- never removes existing IDs;
+- treats a valid empty list as no change.
+
+The CLI mirrors this behavior with `lapp models refresh`; applying requires both
+`--apply` and `--yes`.

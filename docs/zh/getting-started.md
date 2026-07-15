@@ -1,177 +1,140 @@
 # 入门指南
 
-`lapp-js` 让你用一份本地配置描述你的 AI 提供者，然后从终端（`@openlapp/cli`）或 TypeScript（`@openlapp/lapp`）直接调用。
+LAPP 让 AI 应用共享一个本地 Provider 与模型 Registry。应用仍然直接向选中的
+上游 API 发送请求。
 
-```text
-.lapp 配置  →  @openlapp/lapp SDK  →  协议适配器  →  提供者 API
-```
+选择最适合应用的最小接入方式：
 
-它是**客户端，不是网关**：没有服务器、不代理、不计费——你的进程直接和提供者通信。
+1. 直接读取 JSON Profile，自行实现 LAPP 规则。
+2. 在 TypeScript 中使用 `@openlapp/lapp`。
+3. 调用 `lapp`，消费稳定的 JSON 输出。
 
 ## 安装
 
 ```bash
-npm install -g @openlapp/cli     # CLI
-npm install @openlapp/lapp       # SDK（在项目里）
+npm install @openlapp/lapp
+npm install -g @openlapp/cli
 ```
 
-需要 Node 18.18 或更高版本。
+需要 Node.js 18.18 或更高版本。
 
-## 1 · 配置一个提供者（一次）
+## 创建 Profile
 
-配置就是一个小目录（默认 `~/.lapp`），里面几个 JSON 文件。最快的建法是 `lapp provider add`——它注册一个提供者，并（带 `--model` 时）一步设好默认模型。对知名提供者，**预设**会自动补上协议、地址和建议密钥。
-
-**OpenAI**——设好密钥，然后添加：
+CLI 是创建标准 Provider 两文件结构的最快方式；设置默认值时才会创建
+`global.json`。预设会补充已知地址、协议、认证结构和模型发现 URL。
 
 ```bash
 export OPENAI_API_KEY=sk-...
-lapp provider add --id openai --model gpt-4o --yes
+lapp provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
+lapp validate
+lapp models list
 ```
 
-`lapp provider add` 的参数：
-- `--id <id|preset>`——你**自己起**的名字（之后用它指代该提供者），或一个已知预设 id（如 `openai`/`anthropic`/`ollama`，`lapp presets` 列出全部）。
-- `--protocol` / `--base-url`——怎么和它通信。自定义提供者必填；**用预设时可省略**。
-- `--secret env://NAME`——从环境变量读密钥（推荐）。用预设时若省略，自动填约定的 `env://<PROVIDER>_API_KEY`。明文也可以，但会留在磁盘上。
-- `--model`——一步完成：注册一个模型**并**设为默认。
-- `--yes`——应用变更（写入命令会先显示计划；用 `--dry-run` 只预览）。
-
-## 2 · 聊天（每天）
+自定义上游需要显式提供字段：
 
 ```bash
-lapp chat "用五个字打个招呼。"       # 用默认模型
-lapp chat --stream "数到十"          # 流式输出
+lapp provider add \
+  --id custom \
+  --base-url https://ai.example.com/v1 \
+  --protocol openai-chat-completions \
+  --env CUSTOM_AI_KEY \
+  --models-protocol openai-models \
+  --models-url https://ai.example.com/v1/models \
+  --model chat-model \
+  --yes
 ```
 
-临时换目标——把 `provider/model` 作为第一个词：
+交互式输入原始 key 时可以省略 `--env`：CLI 会无回显提示，并保存为
+`vault://<provider>/default`。非交互原始输入使用
+`--vault <credential-id> --stdin`。不需要凭据的 loopback Provider 使用
+`--no-auth`。写命令会先展示文件计划并要求 `--yes`；`--dry-run` 不会写 Profile
+或 Vault。
+
+## 刷新本地模型目录
+
+`models.json` 始终是权威目录。刷新是显式且非破坏性的操作：
 
 ```bash
-lapp chat openai/gpt-4o-mini "快速问个问题。"   # 内联目标
+lapp models refresh --provider openai                 # 预览新增项
+lapp models refresh --provider openai --apply --yes   # 写入新增项
 ```
 
-……或用参数（消息本身含 `/` 时更稳妥）：
+刷新保留所有已有模型和本地字段。默认值需要单独设置：
 
 ```bash
-lapp chat "比较 A/B 测试" --provider openai --model gpt-4o-mini
+lapp default set --task chat --provider openai --model gpt-4o-mini --yes
 ```
 
-也可以**改默认**，然后继续用一行命令：
+## 方式一：直接读取 Profile
 
-```bash
-lapp default set --provider openai --model gpt-4o-mini --kind chat --yes
-lapp chat "现在走 gpt-4o-mini 了。"
-```
+任何语言的应用都可以读取 `global.json`、`provider.json` 和 `models.json`。符合规范
+的实现仍须执行 Schema 与语义规则：目录与 ID 一致、ID/alias 唯一、启用状态、
+协议选择、同源模型发现、严格认证、密钥引用 grammar 以及 canonical 默认值。没有
+Vault 后端的实现仍须识别 `vault://`，只有真正执行需要凭据的远端操作时才显式
+报不支持。
 
-## 3 · 再加一个提供者
+当项目不希望引入 TypeScript 依赖或子进程时，可采用这种方式。完整文件合同见
+[配置文档](configuration.md)。
 
-`lapp provider add` 往已有配置里追加。若想重置为仅含本提供者，用 `--force`。
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-lapp provider add --id anthropic --model claude-sonnet-4 --yes
-```
-
-现在 `lapp chat "你好"` 走最近的默认，`lapp chat openai/gpt-4o "你好"` 走 OpenAI。
-
-## 4 · 看一看
-
-```bash
-lapp inspect              # 人类可读摘要（密钥已脱敏）
-lapp validate             # 结构 + 语义校验
-lapp doctor               # 校验 + 每个启用的提供者能否建成客户端？
-lapp ping openai/gpt-4o   # 1 token 测试请求
-lapp presets              # 列出内置提供者预设
-```
-
-## 提供者配方
-
-添加提供者有两种方式——预设（一行）或完全显式：
-
-```bash
-# 预设
-lapp provider add --id openai --model gpt-4o --yes
-
-# 完全显式（自建/自定义）
-lapp provider add --id my-proxy --protocol openai-chat-completions \
-  --base-url https://my-proxy.example.com/v1 --secret env://MY_PROXY_KEY --yes
-```
-
-常见提供者的 `--protocol` 和 `--base-url`（用于显式形式）：
-
-| 提供者 | `--protocol` | `--base-url` | 认证 |
-|--------|--------------|--------------|------|
-| OpenAI | `openai-chat-completions` | `https://api.openai.com/v1` | `env://OPENAI_API_KEY` |
-| OpenAI Responses | `openai-responses` | `https://api.openai.com/v1` | `env://OPENAI_API_KEY` |
-| Anthropic | `anthropic-messages` | `https://api.anthropic.com` | `env://ANTHROPIC_API_KEY` |
-| DeepSeek | `openai-chat-completions` | `https://api.deepseek.com/v1` | `env://DEEPSEEK_API_KEY` |
-| OpenRouter | `openai-chat-completions` | `https://openrouter.ai/api/v1` | `env://OPENROUTER_API_KEY` |
-| Ollama（本地） | `openai-chat-completions` | `http://localhost:11434/v1` | `--no-auth` |
-| LM Studio（本地） | `openai-chat-completions` | `http://localhost:1234/v1` | `--no-auth` |
-| vLLM（本地） | `openai-chat-completions` | `http://localhost:8000/v1` | `--no-auth` |
-
-注意：
-- `lapp-js` 对 OpenAI 兼容提供者**不会**自动补 `/v1`——如果提供者需要，请写进 `--base-url`。`--base-url` 不要以 `/` 结尾。
-- Anthropic 的适配器只在 `/v1` 是最后一个路径段时才去重。
-- 本地服务器用 `--no-auth` 跳过认证头。完整说明见 [local-providers.md](local-providers.md)。
-
-### 从提供者拉取模型列表
-
-OpenAI 兼容提供者可以从 `/models` 端点同步模型列表：
-
-```bash
-lapp models sync --provider ollama                 # 预览
-lapp models sync --provider ollama --apply --yes   # 写入
-lapp models sync --provider ollama --apply --set-default --yes   # 写入 + 把首个 chat 模型设为默认
-```
-
-Anthropic 没有公开的模型列表端点；可设置 `provider.links.models` 指向一个（见 [protocols.md](protocols.md)）。
-
-## 在 TypeScript 里用
+## 方式二：使用 TypeScript SDK
 
 ```ts
-import { loadProfile, createLappClient, listModels } from "@openlapp/lapp";
+import {
+  listModels,
+  loadProfile,
+  refreshModels,
+  resolveConnection,
+} from "@openlapp/lapp";
 
 const profile = loadProfile();
 
-// 列出所有提供者的全部可用模型
-const models = listModels(profile);
+const models = listModels(profile, { providerId: "openai" });
 
-// 使用全局默认模型聊天
-const client = createLappClient({ profile, resolveSecrets: true });
-const resp = await client.chat({ messages: [{ role: "user", content: "你好！" }] });
-console.log(resp.text);
+const connection = await resolveConnection(
+  profile,
+  { providerId: "openai", model: "gpt-4o-mini" },
+  { supportedProtocols: ["openai-responses", "openai-chat-completions"] },
+);
 
-// 流式输出
-for await (const ev of client.stream({ messages: [{ role: "user", content: "你好！" }] })) {
-  if (ev.kind === "delta") process.stdout.write(ev.text);
-}
+// connection 包含 canonical 模型 ID、地址、请求头与解析后的认证信息。
 
-// 指定提供者/模型
-const cc = createLappClient({ profile, provider: "anthropic", model: "claude-sonnet-4", resolveSecrets: true });
+const preview = await refreshModels(profile, "openai");
+console.log(preview.added);
+// 只有应用决定应用变更后，才持久化 preview.nextProfile。
 ```
 
-`resolveSecrets: true` 是真正调用提供者的必要条件——SDK 除非你显式 opt-in，否则绝不读 `process.env`。完整 API 见 [sdk.md](sdk.md)。
+`listModels()` 是纯函数，不进行 I/O 或密钥解析。`resolveConnection()` 异步解析
+选中连接的凭据。`refreshModels()` 只请求一个已配置发现地址，返回新的内存
+Profile，不会自行写盘。
 
-## 支持的协议
+SDK 还提供直连聊天的 `createLappClient()`：
 
-| 协议 | 聊天 | 流式 | 工具调用 | 模型列表同步 |
-| --- | --- | --- | --- | --- |
-| `openai-chat-completions` | 是 | 是 | 是 | 是（`GET /models`） |
-| `openai-responses` | 是 | 是 | 是 | 是（`GET /models`） |
-| `anthropic-messages` | 是 | 是 | 是 | 没有公开 API；可设置 `provider.links.models` 覆盖 |
+```ts
+import { createLappClient } from "@openlapp/lapp";
 
-## 接下来阅读
+const client = createLappClient({ profile, default: "chat" });
+const response = await client.chat({
+  messages: [{ role: "user", content: "你好" }],
+});
+console.log(response.text);
+```
 
-- [CLI 参考](cli.md) — `lapp` 的每个命令、参数和退出码
-- [SDK 指南](sdk.md) — 如何在 TypeScript 中使用 `@openlapp/lapp`
-- [配置文件](configuration.md) — 配置结构、路径解析、多协议提供者
-- [安全说明](security.md) — 密钥方案、脱敏策略、显式 opt-in 解析
-- [协议说明](protocols.md) — 各协议行为与能力推断
-- [本地提供者](local-providers.md) — Ollama、LM Studio、vLLM
-- [故障排除](troubleshooting.md) — 类型化错误、常见警告、FAQ
-- [迁移说明](migrating.md) — v1.0.0 以来的变更与已知限制
+## 方式三：消费 CLI JSON
 
-## v1 已知限制
+```bash
+lapp models list --json
+lapp resolve --default chat --protocol openai-responses --json
+```
 
-- `keychain://` 和 `file://` 密钥方案会被解析但不会解析出值（v1 仅支持 `plaintext` 和 `env://`）。
-- 同步模型时的能力推断是尽力而为的启发式规则（前缀 + 关键词匹配）；不暴露能力元数据的提供者可以通过直接编辑 `models.json` 补充。
-- 聊天错误的 `err.raw` 会对常见密钥形态进行深度脱敏，但如果提供者把凭据嵌入非字符串字段则无法保护。
+机器输出始终是一个 `{"version":1,"data":...}` 文档。CLI 永远不会输出解析后的
+凭据；`resolve` 只报告 scheme 与状态，`credential status` 检查已知 Vault 引用
+时也不会泄露内容。完整命令面和退出码见 [CLI 参考](cli.md)。
+
+## 下一步
+
+- [SDK 指南](sdk.md)
+- [配置文档](configuration.md)
+- [安全说明](security.md)
+- [协议说明](protocols.md)
+- [本地 Provider](local-providers.md)
+- [故障排除](troubleshooting.md)

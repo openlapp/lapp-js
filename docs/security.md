@@ -1,100 +1,125 @@
 # Security
 
-`lapp-js` is designed around a simple principle: secrets should only move when you explicitly ask them to.
+LAPP v1 assumes that applications running as the same OS user and deliberately
+given access to the profile or shared Vault are trusted. `resolveConnection()`
+returns usable credentials because the application communicates with the
+upstream provider directly.
 
-## Supported secret schemes
+Do not expose a LAPP profile or resolved connection to untrusted code. A design
+where applications cannot receive raw credentials requires a separate policy
+service and is outside v1.
 
-v1 supports two schemes for runtime resolution:
+## Secret forms
 
-| Scheme | Example | Recommended? |
-|--------|---------|--------------|
-| `plaintext` | `"sk-..."` | No — leaves the key on disk. |
-| `env://` | `"env://OPENAI_API_KEY"` | Yes — keeps the key out of the profile. |
+Exactly three forms are valid:
 
-Two additional schemes are parsed but throw `UnsupportedSecretSchemeError` at runtime:
+| Form | Example | Guidance |
+|------|---------|----------|
+| Vault reference | `"vault://openai/default"` | Default for credentials created by the official SDK; protected by the current user's system credential store. |
+| Environment reference | `"env://OPENAI_API_KEY"` | Supported; the key stays out of the profile. |
+| Plaintext | `"sk-..."` | Accepted with a warning; the key remains on disk. |
 
-- `keychain://`
-- `file://`
+Environment names must match `[A-Za-z_][A-Za-z0-9_]*`. Vault references contain
+exactly a provider ID and credential ID, and the provider ID must match the
+profile. `keychain://`, `file://`, malformed references, and unknown URI-like
+forms are invalid rather than silently interpreted.
 
-## Display policy
+Vault is encrypted-at-rest storage, not an application sandbox. Any compatible
+process running as the same OS user may retrieve the record and an authorized
+application receives the plaintext while constructing a direct provider
+request. LAPP v1 has no per-application ACL, gateway, non-exportability,
+cross-device synchronization, password recovery, or authoritative audit log.
 
-Secrets are redacted by default in every SDK and CLI path that prints profile contents:
+## Strict authentication
 
-- `lapp inspect`
-- `validateProfile` diagnostics
-- `inspectProfile` summaries
-- CLI error output (defense-in-depth regex scrubbing)
+Use one explicit auth variant:
 
-To reveal secrets, pass `revealSecrets: true` to `inspectProfile` or `--reveal-secrets` to the CLI. Do this only in trusted environments.
-
-The model's reply in `lapp chat` is printed verbatim. Re-running redaction over provider text would mangle legitimate key-shaped content (for example, the model explaining what an API key looks like), so it is deliberately not applied there.
-
-## Resolution policy
-
-The SDK **never** reads `process.env` unless you explicitly opt in.
-
-```ts
-const client = createLappClient({ profile, resolveSecrets: true });
+```json
+{ "type": "none" }
+{ "type": "bearer", "secret": "vault://openai/default" }
+{ "type": "header", "name": "x-api-key", "secret": "env://ANTHROPIC_API_KEY" }
+{ "type": "query", "name": "key", "secret": "env://PROVIDER_KEY" }
 ```
 
-```bash
-lapp env --format bash --resolve
-```
+Unknown types and missing fields are errors. There is no implicit Bearer
+behavior. `requestHeaders` cannot contain authentication, proxy-authentication,
+cookie, or API-key headers. Names are unique case-insensitively and cannot
+collide with the configured header-auth name.
 
-The client fails fast on unresolved secrets. It never substitutes a placeholder or empty string.
+## When secrets are resolved
 
-## Env-export policy
+- `loadProfile()` validates secret references but does not resolve them.
+- `inspectProfile()` returns only redacted secret summaries.
+- `listModels()` performs no secret resolution or I/O.
+- asynchronous `resolveConnection()` and `refreshModels()` resolve only the
+  selected provider's secret;
+- a client created by `createLappClient()` resolves again immediately before
+  each request, so Vault rotation is observed without recreating the client.
 
-`exportEnv` (and `lapp env`) requires two separate opt-ins to emit plaintext or resolved values:
+The default resolver reads `process.env` for environment references and opens
+the current user's system credential store only for Vault references. Tests and
+embedding applications may inject an environment map and `CredentialVault`.
+Missing environment values, Vault records, native backends, invalid envelopes,
+or binding mismatches fail before network I/O. There is no fallback to another
+secret form.
 
-- `resolve: true` — read `env://` values from `process.env`.
-- `allowPlaintext: true` — include plaintext secrets in the output.
+## CLI display policy
 
-Without `allowPlaintext`, plaintext entries are omitted. Without `resolve`, `env://` entries are emitted as literal references.
+`inspect`, `resolve`, `credential status`, diagnostics, and JSON output never
+reveal a credential. The CLI intentionally provides no get or export command;
+raw credentials are accepted only through a no-echo terminal prompt or stdin,
+never as an argument value.
 
-```ts
-const out = exportEnv(profile, {
-  format: "bash",
-  resolve: true,
-  allowPlaintext: false,
-});
-```
+Provider error text is scrubbed for common credential shapes before reaching
+CLI diagnostics. This is defense in depth, not a substitute for avoiding logs
+that contain request headers or resolved connections.
 
-## Error redaction
+## Endpoint binding
 
-When a chat or sync request throws, `err.raw` is deep-scrubbed on string leaves using a shared set of secret patterns (OpenAI/Anthropic-style keys, OpenRouter, GitHub tokens, xAI, Google, and generic `Bearer ...` strings).
+Vault envelopes are bound to the configured provider ID, normalized origin,
+and authentication type/name. Header names are normalized to lowercase; query
+parameter names remain case-sensitive. Compliant clients verify this binding
+before returning the plaintext and verify the final request origin again before
+injecting authentication. In addition:
 
-Caveat: providers that embed credentials in non-string fields are not protected. This is a v1 known limitation.
+- `modelDiscovery.url` must have the same origin as `baseUrl`;
+- remote origins require HTTPS;
+- loopback HTTP is allowed for local development;
+- URLs cannot contain a username, password, or fragment;
+- authenticated discovery requests do not follow redirects.
 
-## Auth-header deduplication
+Review a profile before enabling it. A profile controls both the credential
+reference and destination, so profiles copied from a repository or received
+from another person are executable security configuration, not harmless data.
+Binding prevents an edited profile from silently redirecting a Vault credential
+through the official SDK; it does not stop a malicious same-user process from
+reading the shared system credential record directly.
 
-Adapters strip auth-carrying keys (`authorization`, `x-api-key`) from user-supplied `requestHeaders` case-insensitively before adding their own. This prevents a user-supplied `X-Api-Key` header from colliding with the adapter's auth header.
+## Platform storage and recovery
 
-When `auth.queryParam` is set, the client strips header auth entirely so the secret does not leak in both the URL and headers.
+The Windows implementation uses the current user's native Credential Manager.
+macOS and Linux support is best-effort and depends on a working native credential
+service. If the native module or service is unavailable, Vault operations fail
+with a typed error. LAPP never creates a plaintext or encrypted-file fallback.
 
-## Unauthenticated providers
+Vault records are not part of `LAPP_HOME` backups and are not synchronized by
+LAPP. OS account, credential-store, or device resets may make a record
+unavailable. Keep an independent recovery path with the upstream provider, such
+as rotating or creating a replacement API key.
 
-Local/self-hosted providers such as Ollama, LM Studio, and vLLM usually do not require auth. Use `allowUnauthenticated: true` in the SDK or `--no-auth` in the CLI:
+## File safety
 
-```ts
-const client = createLappClient({
-  profile,
-  provider: "ollama",
-  model: "llama3",
-  allowUnauthenticated: true,
-});
-```
+Provider IDs use a strict filename-safe grammar. The writer verifies every
+resolved write and delete target remains under the selected profile root and
+rejects colliding or invalid IDs instead of sanitizing them.
 
-```bash
-lapp provider add --id ollama --yes
-```
+## Recommendations
 
-`allowUnauthenticated` skips the auth header but still fails fast on other resolve errors. The CLI auto-allow-unauthenticated for `lapp chat` / `lapp ping` against such providers.
-
-## Practical recommendations
-
-- Use `env://` for every real key.
-- Do not commit `.lapp` profiles that contain `plaintext` secrets.
-- Run `lapp doctor` after any auth-related change.
-- Treat `--reveal-secrets` and `--allow-plaintext` as privileged operations.
-- Keep provider `baseUrl` values stable; rotating secrets should only require changing the environment variable.
+- Keep the authoritative profile in a user-controlled `LAPP_HOME`, not an
+  untrusted project checkout.
+- Use the SDK's default Vault storage for newly entered keys, or `env://` for
+  externally managed secrets; never commit plaintext credentials.
+- Select plaintext storage only through an explicit, reviewed opt-in.
+- Use `auth.type: "none"` only for services that truly require no credential.
+- Keep `modelDiscovery` on the provider's origin.
+- Run `lapp validate` after manual edits.

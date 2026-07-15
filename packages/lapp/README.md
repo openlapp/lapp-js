@@ -1,56 +1,112 @@
 # @openlapp/lapp
 
-[LAPP](https://github.com/openlapp/lapp)（Local AI Provider Profiles，本地 AI 提供者配置）的 TypeScript SDK。
+TypeScript SDK for [LAPP](https://github.com/openlapp/lapp), a local AI
+provider and model registry. Load connection details and credentials, then call
+the upstream provider directly.
 
-读取、验证、编写、管理 `.lapp` 配置，并直接调用提供者 —— 不是网关，没有持久化服务器。
+The package does not run a server or route traffic for other applications.
 
-> **Languages:** [English](https://github.com/openlapp/lapp-js/blob/main/README.md) | [中文](https://github.com/openlapp/lapp-js/blob/main/README_zh.md)
-
-## 安装
+## Install
 
 ```bash
 npm install @openlapp/lapp
 ```
 
-需要 Node 18.18 或更高版本。
+Node.js 18.18 or newer is required. ESM and CommonJS entry points are included.
 
-## 快速开始
+## Discover and resolve
 
 ```ts
-import { loadProfile, createLappClient } from "@openlapp/lapp";
+import {
+  listModels,
+  loadProfile,
+  resolveConnection,
+  selectConnection,
+} from "@openlapp/lapp";
 
-const profile = loadProfile();                  // 解析 ~/.lapp
-const client = createLappClient({
+const profile = loadProfile();
+const models = listModels(profile);
+const plan = selectConnection(profile, { default: "chat" });
+const connection = await resolveConnection(
   profile,
-  provider: "openai",
-  model: "gpt-4o",
-  resolveSecrets: true,
-});
-
-const resp = await client.chat({
-  messages: [{ role: "user", content: "你好！" }],
-});
-console.log(resp.text);
+  { default: "chat" },
+  { supportedProtocols: ["openai-responses", "openai-chat-completions"] },
+);
 ```
 
-## 功能
+`listModels()` and `selectConnection()` are synchronous pure operations and do
+not resolve credentials. `resolveConnection()` is asynchronous and returns the
+canonical model ID, selected protocol, endpoint, headers, and resolved auth for
+a trusted caller. It accepts injected `env`, `vault`, or `resolver` options;
+credential schemes never fall back to one another.
 
-- **加载并验证**磁盘上的 `.lapp` 配置。
-- **管理**提供者、模型和默认值，使用纯函数且不可变。
-- **原子写入**配置（内存中验证、写临时文件、重命名覆盖目标）。
-- **调用提供者**通过 `createLappClient` 选择对应协议适配器。
-- **导出密钥**为 shell 语句，供从环境变量读取密钥的工具使用。
+The official high-level writer stores new raw credentials in the current
+user's system Vault by default and places a
+`vault://provider/credential` reference in the profile. Plaintext remains a
+valid explicit option and produces a warning; `env://NAME` remains available
+for externally managed secrets.
 
-## 文档
+```ts
+import { upsertProviderWithCredential } from "@openlapp/lapp";
 
-- [SDK 指南](https://github.com/openlapp/lapp-js/blob/main/docs/zh/sdk.md)
-- [API 参考](https://github.com/openlapp/lapp-js/blob/main/packages/lapp/docs/api.md)
-- [配置文件](https://github.com/openlapp/lapp-js/blob/main/docs/zh/configuration.md)
-- [安全说明](https://github.com/openlapp/lapp-js/blob/main/docs/zh/security.md)
-- [故障排除](https://github.com/openlapp/lapp-js/blob/main/docs/zh/troubleshooting.md)
+const result = await upsertProviderWithCredential(profile, {
+  id: "openai",
+  baseUrl: "https://api.openai.com/v1",
+  protocols: ["openai-responses"],
+  auth: { type: "bearer", credential: { secret: userInput } },
+});
+```
 
-TypeScript 定义以 `dist/index.d.ts` 为准。
+The call may update the Vault but only returns an in-memory profile; persist it
+explicitly with `writeProfileAtomic()`. `openSystemCredentialVault()` and
+`createCredentialResolver()` expose the lower-level Vault and resolution APIs.
 
-## 许可证
+## Refresh the local model directory
+
+```ts
+import { refreshModels, writeProfileAtomic } from "@openlapp/lapp";
+
+const result = await refreshModels(profile, "openai");
+await writeProfileAtomic(result.nextProfile, { before: profile });
+```
+
+Refresh is explicit and does not write by itself. It only appends new remote
+IDs and may fill missing display names; it never removes or overwrites existing
+local models.
+
+## Optional direct-call client
+
+```ts
+import { createLappClient } from "@openlapp/lapp";
+
+const client = createLappClient({ profile, default: "chat" });
+const response = await client.chat({
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(response.text);
+```
+
+The factory is synchronous and does not resolve credentials. Each provider
+operation resolves again immediately before use, so Vault rotation is visible
+on the next operation and resolved plaintext is not cached by the client.
+
+The bundled client supports `openai-chat-completions`, `openai-responses`, and
+`anthropic-messages`, including streaming and tool calls. Other protocol IDs
+remain available through `resolveConnection()` for applications that implement
+them.
+
+## Documentation
+
+- [SDK guide](https://github.com/openlapp/lapp-js/blob/main/docs/sdk.md)
+- [API reference](https://github.com/openlapp/lapp-js/blob/main/packages/lapp/docs/api.md)
+- [Configuration](https://github.com/openlapp/lapp-js/blob/main/docs/configuration.md)
+- [Security](https://github.com/openlapp/lapp-js/blob/main/docs/security.md)
+- [Protocol](./spec.en.md) · [协议](./spec.zh-CN.md)
+- [User agreement](./USER_AGREEMENT.en.md) · [用户协议](./USER_AGREEMENT.zh-CN.md)
+- [中文文档](https://github.com/openlapp/lapp-js/blob/main/README_zh.md)
+
+TypeScript declarations in `dist/index.d.ts` are the final API source of truth.
+
+## License
 
 MIT

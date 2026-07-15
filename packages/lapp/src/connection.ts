@@ -1,99 +1,182 @@
-/**
- * Profile query helpers.
- *
- * Lightweight convenience APIs that work over an in-memory `LappProfile`
- * (use `loadProfile` to read one from disk first). These do not touch the
- * network or the filesystem — pure functions over already-loaded data.
- *
- * For requests / streaming / tool calls, use `createLappClient`.
- */
-
-import type { LappProfile, LinkMap } from "./types.js";
-import { getProviderProtocols, getPrimaryProtocolId, getProtocolBaseUrl } from "./protocols.js";
-
-/** A flattened model entry combining provider-level + model-level fields. */
-export interface FlatModelEntry {
-  providerId: string;
-  providerName?: string;
-  providerEnabled: boolean;
-  modelId: string;
-  modelName?: string;
-  modelEnabled: boolean;
-  /** Negotiated protocol id for the provider (first entry in `protocols`). */
-  protocol: string;
-  /** Final baseUrl after applying any protocol-level override. */
-  baseUrl: string;
-  type?: string;
-  capabilities?: string[];
-  inputModalities?: string[];
-  outputModalities?: string[];
-  aliases?: string[];
-  contextWindow?: number;
-  maxOutputTokens?: number;
-  links?: LinkMap;
-}
+import {
+  createCredentialResolver,
+  credentialBindingForProvider,
+  resolveAuthConfig,
+} from "./secret/index.js";
+import {
+  ProfileValidationError,
+  TargetResolutionError,
+  type ConnectionPlan,
+  type CredentialResolver,
+  type CredentialVault,
+  type LappProfile,
+  type LappProvider,
+  type ModelDescriptor,
+  type ModelEntry,
+  type ModelSelector,
+  type ResolvedConnection,
+} from "./types.js";
+import { validateProfile } from "./validate/index.js";
 
 export interface ListModelsOptions {
-  /** Restrict to a single provider id (exact match). */
   providerId?: string;
-  /** Include providers with `enabled: false` (default `false`). */
+  /** Include disabled providers and models. */
   includeDisabled?: boolean;
-  /** Include models with `enabled: false` (default `false`). */
-  includeDisabledModels?: boolean;
 }
 
-/**
- * Flatten a profile into a list of `{ providerId, modelId, ... }` records,
- * one per model. Providers with no `models.json` produce no entries (callers
- * can detect them via `inspectProfile`).
- *
- * Pure in-memory walk — no disk I/O, no network. Order matches the on-disk
- * sort order of providers (alphabetical by directory name) and the
- * declarative order of `models.json`.
- */
+function descriptor(provider: LappProvider, model: ModelEntry): ModelDescriptor {
+  return {
+    providerId: provider.config.id,
+    ...(provider.config.name !== undefined ? { providerName: provider.config.name } : {}),
+    providerEnabled: provider.config.enabled !== false,
+    modelId: model.id,
+    ...(model.name !== undefined ? { modelName: model.name } : {}),
+    modelEnabled: model.enabled !== false,
+    protocols: [...(model.protocols ?? provider.config.protocols)],
+    baseUrl: provider.config.baseUrl,
+    ...(model.aliases !== undefined ? { aliases: [...model.aliases] } : {}),
+    ...(model.type !== undefined ? { type: model.type } : {}),
+    ...(model.inputModalities !== undefined ? { inputModalities: [...model.inputModalities] } : {}),
+    ...(model.outputModalities !== undefined ? { outputModalities: [...model.outputModalities] } : {}),
+    ...(model.capabilities !== undefined ? { capabilities: [...model.capabilities] } : {}),
+    ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+    ...(model.maxOutputTokens !== undefined ? { maxOutputTokens: model.maxOutputTokens } : {}),
+    ...(model.extensions !== undefined ? { extensions: structuredClone(model.extensions) } : {}),
+  };
+}
+
+/** Pure in-memory model listing. It never resolves secrets or performs I/O. */
 export function listModels(
   profile: LappProfile,
   options: ListModelsOptions = {},
-): FlatModelEntry[] {
+): ModelDescriptor[] {
   const includeDisabled = options.includeDisabled ?? false;
-  const includeDisabledModels = options.includeDisabledModels ?? false;
-  const providerFilter = options.providerId;
-
-  const out: FlatModelEntry[] = [];
-  for (const p of profile.providers) {
-    if (providerFilter !== undefined && p.config.id !== providerFilter) continue;
-    const providerEnabled = p.config.enabled !== false;
-    if (!providerEnabled && !includeDisabled) continue;
-
-    const protocol = getPrimaryProtocolId(p.config);
-    // Reuse the resolved protocol entry (not a fresh `{ id }`) so the
-    // protocol-level baseUrl / requestHeaders / capabilities override the
-    // provider-level values.
-    const protocolEntry = getProviderProtocols(p.config)[0] ?? { id: protocol };
-    const baseUrl = getProtocolBaseUrl(p.config, protocolEntry);
-    const modelList = p.models?.models ?? [];
-    for (const m of modelList) {
-      const modelEnabled = m.enabled !== false;
-      if (!modelEnabled && !includeDisabledModels) continue;
-      out.push({
-        providerId: p.config.id,
-        ...(p.config.name !== undefined ? { providerName: p.config.name } : {}),
-        providerEnabled,
-        modelId: m.id,
-        ...(m.name !== undefined ? { modelName: m.name } : {}),
-        modelEnabled,
-        protocol,
-        baseUrl,
-        ...(m.type !== undefined ? { type: m.type } : {}),
-        ...(Array.isArray(m.capabilities) ? { capabilities: m.capabilities } : {}),
-        ...(Array.isArray(m.inputModalities) ? { inputModalities: m.inputModalities } : {}),
-        ...(Array.isArray(m.outputModalities) ? { outputModalities: m.outputModalities } : {}),
-        ...(Array.isArray(m.aliases) ? { aliases: m.aliases } : {}),
-        ...(typeof m.contextWindow === "number" ? { contextWindow: m.contextWindow } : {}),
-        ...(typeof m.maxOutputTokens === "number" ? { maxOutputTokens: m.maxOutputTokens } : {}),
-        ...(m.links !== undefined ? { links: m.links } : {}),
-      });
+  const result: ModelDescriptor[] = [];
+  for (const provider of profile.providers) {
+    if (options.providerId !== undefined && provider.config.id !== options.providerId) continue;
+    if (!includeDisabled && provider.config.enabled === false) continue;
+    for (const model of provider.models.models) {
+      if (!includeDisabled && model.enabled === false) continue;
+      result.push(descriptor(provider, model));
     }
   }
-  return out;
+  return result;
 }
+
+export interface ResolveConnectionOptions {
+  supportedProtocols?: readonly string[];
+  env?: Record<string, string | undefined>;
+  vault?: CredentialVault;
+  resolver?: CredentialResolver;
+}
+
+export interface SelectConnectionOptions {
+  supportedProtocols?: readonly string[];
+}
+
+function resolveSelector(profile: LappProfile, selector: ModelSelector): { providerId: string; model: string } {
+  if ("providerId" in selector) return selector;
+  const ref = profile.global?.defaults[selector.default];
+  if (!ref) {
+    throw new TargetResolutionError(
+      `default not found: ${selector.default}`,
+      "DEFAULT_NOT_FOUND",
+    );
+  }
+  return { providerId: ref.providerId, model: ref.modelId };
+}
+
+export function selectConnection(
+  profile: LappProfile,
+  selector: ModelSelector,
+  options: SelectConnectionOptions = {},
+): ConnectionPlan {
+  const validation = validateProfile(profile);
+  if (!validation.valid) {
+    const detail = validation.diagnostics.find((entry) => entry.level === "ERROR")?.message;
+    throw new ProfileValidationError(
+      validation.diagnostics,
+      `cannot select a connection from an invalid profile${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  const target = resolveSelector(profile, selector);
+  const provider = profile.providers.find((entry) => entry.config.id === target.providerId);
+  if (!provider) {
+    throw new TargetResolutionError(`provider not found: ${target.providerId}`, "PROVIDER_NOT_FOUND");
+  }
+  if (provider.config.enabled === false) {
+    throw new TargetResolutionError(`provider is disabled: ${target.providerId}`, "PROVIDER_DISABLED");
+  }
+
+  const matches = provider.models.models.filter(
+    (model) => model.id === target.model || model.aliases?.includes(target.model),
+  );
+  if (matches.length === 0) {
+    throw new TargetResolutionError(
+      `model not found: ${target.providerId}/${target.model}`,
+      "MODEL_NOT_FOUND",
+    );
+  }
+  if (matches.length > 1) {
+    throw new TargetResolutionError(
+      `model is ambiguous: ${target.providerId}/${target.model}`,
+      "MODEL_AMBIGUOUS",
+    );
+  }
+  const model = matches[0]!;
+  if (model.enabled === false) {
+    throw new TargetResolutionError(
+      `model is disabled: ${target.providerId}/${model.id}`,
+      "MODEL_DISABLED",
+    );
+  }
+
+  const candidates = model.protocols ?? provider.config.protocols;
+  const protocol = options.supportedProtocols === undefined
+    ? candidates[0]
+    : candidates.find((candidate) => options.supportedProtocols!.includes(candidate));
+  if (!protocol) {
+    throw new TargetResolutionError(
+      `no supported protocol for ${target.providerId}/${model.id}`,
+      "PROTOCOL_NOT_SUPPORTED",
+    );
+  }
+
+  const credentialBinding = credentialBindingForProvider(provider.config);
+  return {
+    providerId: provider.config.id,
+    modelId: model.id,
+    protocol,
+    baseUrl: provider.config.baseUrl,
+    requestHeaders: { ...(provider.config.requestHeaders ?? {}) },
+    auth: structuredClone(provider.config.auth),
+    ...(credentialBinding ? { credentialBinding } : {}),
+  };
+}
+
+export async function resolveConnection(
+  profile: LappProfile,
+  selector: ModelSelector,
+  options: ResolveConnectionOptions = {},
+): Promise<ResolvedConnection> {
+  const plan = selectConnection(profile, selector, options);
+  const resolver = options.resolver ?? createCredentialResolver({
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.vault ? { vault: options.vault } : {}),
+  });
+  return {
+    providerId: plan.providerId,
+    modelId: plan.modelId,
+    protocol: plan.protocol,
+    baseUrl: plan.baseUrl,
+    requestHeaders: plan.requestHeaders,
+    auth: await resolveAuthConfig(plan.auth, plan.credentialBinding, { resolver }),
+  };
+}
+
+export type {
+  ConnectionPlan,
+  ModelDescriptor,
+  ModelSelector,
+  ResolvedConnection,
+} from "./types.js";

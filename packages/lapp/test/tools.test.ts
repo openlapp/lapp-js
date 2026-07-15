@@ -1,379 +1,224 @@
-/**
- * Tool-calling coverage: per-adapter request building, response parsing, and
- * the `executeWithTools` multi-turn loop.
- */
+import { describe, expect, it } from "vitest";
+import { createLappClient } from "../src/client/index.js";
+import type { AuthConfig, LappProfile } from "../src/types.js";
 
-import { describe, it, expect } from "vitest";
-import {
-  createLappClient,
-  type ChatInput,
-} from "../src/index.js";
-import { createProfile, upsertProvider, upsertModel } from "../src/index.js";
+function profile(protocol: string, auth: AuthConfig = { type: "bearer", secret: "secret" }): LappProfile {
+  return {
+    global: {
+      schemaVersion: "1.0",
+      defaults: { chat: { providerId: "p", modelId: "m" } },
+    },
+    providers: [{
+      config: {
+        schemaVersion: "1.0",
+        id: "p",
+        baseUrl: "https://provider.example/v1",
+        protocols: [protocol],
+        auth,
+      },
+      models: { schemaVersion: "1.0", models: [{ id: "m", type: "chat" }] },
+    }],
+  };
+}
 
-function makeStream(text: string): ReadableStream<Uint8Array> {
-  return new ReadableStream({
+function json(value: unknown): Response {
+  return new Response(JSON.stringify(value), { status: 200 });
+}
+
+function sse(events: string[]): Response {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode(text));
+      controller.enqueue(encoder.encode(events.map((event) => `data: ${event}\n\n`).join("")));
       controller.close();
     },
-  });
+  }));
 }
 
-function baseProfile() {
-  let p = createProfile({ rootDir: "/tmp/.lapp" });
-  p = upsertProvider(p, { id: "p", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "sk" } });
-  p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-  return p;
-}
+const addTool = {
+  name: "add",
+  parameters: {
+    type: "object",
+    properties: { a: { type: "number" }, b: { type: "number" } },
+    required: ["a", "b"],
+    additionalProperties: false,
+  },
+};
 
-describe("openai-chat: tool request building", () => {
-  it("emits tools + tool_choice when provided", async () => {
-    const p = baseProfile();
-    let captured: { body: { tools?: unknown; tool_choice?: unknown } } | null = null;
-    const wrappedFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      captured = { body: JSON.parse((init?.body as string) ?? "{}") };
-      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
-    }) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    await c.chat({
-      messages: [{ role: "user", content: "hi" }],
-      tools: [{ name: "echo", description: "echoes args", parameters: { type: "object", properties: { x: { type: "string" } } } }],
-      toolChoice: "auto",
-    } as ChatInput);
-    expect(captured!.body.tools).toEqual([
-      { type: "function", function: { name: "echo", description: "echoes args", parameters: { type: "object", properties: { x: { type: "string" } } } } },
-    ]);
-    expect(captured!.body.tool_choice).toBe("auto");
-  });
-
-  it("parses tool_calls in response with parsed arguments", async () => {
-    const p = baseProfile();
-    const wrappedFetch = (async () =>
-      new Response(JSON.stringify({
+describe("executeWithTools", () => {
+  it("returns a closed transcript including the final assistant", async () => {
+    const replies = [
+      {
         choices: [{
           message: {
             content: "",
             tool_calls: [{
               id: "call_1",
-              function: { name: "echo", arguments: '{"x":"y"}' },
+              type: "function",
+              function: { name: "add", arguments: "{\"a\":1,\"b\":2}" },
             }],
           },
+          finish_reason: "tool_calls",
         }],
-      }), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    const resp = await c.chat({ messages: [{ role: "user", content: "hi" }] } as ChatInput);
-    expect(resp.toolCalls).toEqual([{ id: "call_1", name: "echo", arguments: { x: "y" } }]);
-  });
-
-  it("tolerates malformed JSON in tool arguments (parseError flag)", async () => {
-    const p = baseProfile();
-    const wrappedFetch = (async () =>
-      new Response(JSON.stringify({
-        choices: [{ message: { tool_calls: [{ id: "c1", function: { name: "f", arguments: "{not-json" } }] } }],
-      }), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    const resp = await c.chat({ messages: [{ role: "user", content: "hi" }] } as ChatInput);
-    expect(resp.toolCalls?.[0]?.parseError).toBeDefined();
-    expect(resp.toolCalls?.[0]?.argumentsRaw).toBe("{not-json");
-  });
-});
-
-describe("openai-responses: tool request building", () => {
-  it("emits tools with name/description/parameters and parses function_call output items", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "openai-responses", baseUrl: "https://x", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    let captured: { body: { tools?: Array<{ type: string; name: string; parameters?: unknown }> } } | null = null;
-    const wrappedFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      captured = { body: JSON.parse((init?.body as string) ?? "{}") };
-      return new Response(JSON.stringify({
-        output: [{ type: "function_call", call_id: "call_1", name: "echo", arguments: '{"x":1}' }],
-      }), { status: 200 });
-    }) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    const resp = await c.chat({
-      messages: [{ role: "user", content: "hi" }],
-      tools: [{ name: "echo", parameters: { type: "object" } }],
-    } as ChatInput);
-    expect(captured!.body.tools?.[0]).toMatchObject({ type: "function", name: "echo" });
-    expect(resp.toolCalls?.[0]).toMatchObject({ id: "call_1", name: "echo", arguments: { x: 1 } });
-  });
-});
-
-describe("anthropic-messages: tool request building", () => {
-  it("emits input_schema tools and parses tool_use content blocks", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "anthropic-messages", baseUrl: "https://api.anthropic.com", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    let captured: { body: { tools?: Array<{ name: string; input_schema?: unknown }> } } | null = null;
-    const wrappedFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      captured = { body: JSON.parse((init?.body as string) ?? "{}") };
-      return new Response(JSON.stringify({
-        content: [{ type: "tool_use", id: "t1", name: "echo", input: { x: 1 } }],
-      }), { status: 200 });
-    }) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    const resp = await c.chat({
-      messages: [{ role: "user", content: "hi" }],
-      tools: [{ name: "echo", parameters: { type: "object" } }],
-    } as ChatInput);
-    expect(captured!.body.tools?.[0]).toMatchObject({ name: "echo", input_schema: { type: "object" } });
-    expect(resp.toolCalls?.[0]).toMatchObject({ id: "t1", name: "echo", arguments: { x: 1 } });
-  });
-
-  it("anthropic-messages: assistant text + toolCalls round-trip together", async () => {
-    // Regression: assistant content with reasoning text + tool calls must
-    // produce mixed text + tool_use blocks on the next request, otherwise
-    // the model's prior reasoning is lost mid-loop.
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "anthropic-messages", baseUrl: "https://api.anthropic.com", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    let captured: { body: { messages?: Array<{ role: string; content: unknown }> } } | null = null;
-    const wrappedFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      captured = { body: JSON.parse((init?.body as string) ?? "{}") };
-      return new Response(JSON.stringify({ content: [{ type: "text", text: "final" }] }), { status: 200 });
-    }) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    await c.chat({
-      messages: [
-        { role: "user", content: "do it" },
-        {
-          role: "assistant",
-          content: "thinking about it",
-          toolCalls: [{ id: "t1", name: "echo", arguments: '{"x":1}' }],
-        },
-        { role: "tool", toolCallId: "t1", content: "result" },
-      ],
-    } as ChatInput);
-    const assistantContent = captured!.body.messages!.find((m) => m.role === "assistant")!.content as Array<{ type: string; text?: string; id?: string }>;
-    const types = assistantContent.map((b) => b.type);
-    expect(types).toContain("text");
-    expect(types).toContain("tool_use");
-    expect(assistantContent.find((b) => b.type === "text")!.text).toBe("thinking about it");
-    expect(assistantContent.find((b) => b.type === "tool_use")!.id).toBe("t1");
-  });
-});
-
-describe("executeWithTools", () => {
-  it("loops until the model returns no tool calls", async () => {
-    const p = baseProfile();
-    const toolArgs = JSON.stringify({ a: 2, b: 3 });
-    // First call: model asks to call "add(2,3)". Second call: final answer.
-    const responses = [
-      new Response(JSON.stringify({
-        choices: [{ message: { content: "", tool_calls: [{ id: "c1", function: { name: "add", arguments: toolArgs } }] } }],
-      }), { status: 200 }),
-      new Response(JSON.stringify({
-        choices: [{ message: { content: "5" } }],
-      }), { status: 200 }),
+      },
+      { choices: [{ message: { content: "3" }, finish_reason: "stop" }] },
     ];
-    let i = 0;
-    const wrappedFetch = (async () => responses[i++]!) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    const out = await c.executeWithTools(
-      { messages: [{ role: "user", content: "sum" }] },
-      [{ name: "add", parameters: { type: "object" } }],
-      { add: (args) => String((args.a as number) + (args.b as number)) },
+    const client = createLappClient({
+      profile: profile("openai-chat-completions"),
+      fetchImpl: async () => json(replies.shift()),
+    });
+
+    const result = await client.executeWithTools(
+      { messages: [{ role: "user", content: "1 + 2" }] },
+      [addTool],
+      { add: ({ a, b }) => String(Number(a) + Number(b)) },
     );
-    expect(out.text).toBe("5");
-    expect(out.turns).toBe(2);
-    // 1 user + 1 assistant echo + 1 tool result = 3 messages at end.
-    expect(out.messages).toHaveLength(3);
-    expect(out.messages[1]?.role).toBe("assistant");
-    expect(out.messages[1]?.toolCalls?.[0]?.name).toBe("add");
-    expect(out.messages[2]?.role).toBe("tool");
-    expect(out.messages[2]?.toolCallId).toBe("c1");
+
+    expect(result.text).toBe("3");
+    expect(result.turns).toBe(2);
+    expect(result.messages).toEqual([
+      { role: "user", content: "1 + 2" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_1", name: "add", arguments: "{\"a\":1,\"b\":2}" }],
+      },
+      { role: "tool", content: "3", toolCallId: "call_1", name: "add" },
+      { role: "assistant", content: "3" },
+    ]);
   });
 
-  it("captures handler errors as tool result of `error: ...`", async () => {
-    const p = baseProfile();
-    const responses = [
-      new Response(JSON.stringify({
-        choices: [{ message: { tool_calls: [{ id: "c1", function: { name: "boom", arguments: "{}" } }] } }],
-      }), { status: 200 }),
-      new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }),
+  it("does not execute a handler when tool arguments are malformed JSON", async () => {
+    let handlerCalls = 0;
+    const replies = [
+      {
+        choices: [{ message: { tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "add", arguments: "{" },
+        }] } }],
+      },
+      { choices: [{ message: { content: "recovered" } }] },
     ];
-    let i = 0;
-    const wrappedFetch = (async () => responses[i++]!) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    const out = await c.executeWithTools(
-      { messages: [{ role: "user", content: "x" }] },
-      [{ name: "boom", parameters: { type: "object" } }],
-      { boom: () => { throw new Error("kaboom"); } },
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const client = createLappClient({
+      profile: profile("openai-chat-completions"),
+      fetchImpl: async (_input, init) => {
+        requestBodies.push(JSON.parse(String(init?.body)));
+        return json(replies.shift());
+      },
+    });
+
+    await client.executeWithTools(
+      { messages: [{ role: "user", content: "add" }] },
+      [addTool],
+      { add: () => { handlerCalls++; return "wrong"; } },
     );
-    expect(out.text).toBe("ok");
-    const toolMsg = out.messages.find((m) => m.role === "tool");
-    expect(toolMsg?.content).toMatch(/error: kaboom/);
+
+    expect(handlerCalls).toBe(0);
+    expect(JSON.stringify(requestBodies[1])).toContain("error: invalid arguments for tool");
   });
 
-  it("throws when maxTurns is exceeded", async () => {
-    const p = baseProfile();
-    const wrappedFetch = (async () =>
-      new Response(JSON.stringify({
-        choices: [{ message: { tool_calls: [{ id: "c1", function: { name: "loop", arguments: "{}" } }] } }],
-      }), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    await expect(c.executeWithTools(
-      { messages: [{ role: "user", content: "x" }] },
-      [{ name: "loop", parameters: { type: "object" } }],
-      { loop: () => "still going" },
-      { maxTurns: 2 },
-    )).rejects.toThrow(/maxTurns/);
-  });
-
-  it("treats missing handler as tool result of `error: no handler...`", async () => {
-    const p = baseProfile();
-    const responses = [
-      new Response(JSON.stringify({
-        choices: [{ message: { tool_calls: [{ id: "c1", function: { name: "nope", arguments: "{}" } }] } }],
-      }), { status: 200 }),
-      new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }), { status: 200 }),
+  it("does not execute a handler when arguments fail the declared schema", async () => {
+    let handlerCalls = 0;
+    const replies = [
+      {
+        choices: [{ message: { tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "add", arguments: "{\"a\":1}" },
+        }] } }],
+      },
+      { choices: [{ message: { content: "recovered" } }] },
     ];
-    let i = 0;
-    const wrappedFetch = (async () => responses[i++]!) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    const out = await c.executeWithTools(
-      { messages: [{ role: "user", content: "x" }] },
-      [{ name: "nope", parameters: { type: "object" } }],
+    const client = createLappClient({
+      profile: profile("openai-chat-completions"),
+      fetchImpl: async () => json(replies.shift()),
+    });
+
+    await client.executeWithTools(
+      { messages: [{ role: "user", content: "add" }] },
+      [addTool],
+      { add: () => { handlerCalls++; return "wrong"; } },
+    );
+
+    expect(handlerCalls).toBe(0);
+  });
+
+  it("passes the loop AbortSignal to every provider fetch", async () => {
+    const controller = new AbortController();
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const client = createLappClient({
+      profile: profile("openai-chat-completions"),
+      fetchImpl: async (_input, init) => {
+        signals.push(init?.signal);
+        return json({ choices: [{ message: { content: "done" } }] });
+      },
+    });
+
+    await client.executeWithTools(
+      { messages: [{ role: "user", content: "done" }] },
+      [],
       {},
+      { signal: controller.signal },
     );
-    const toolMsg = out.messages.find((m) => m.role === "tool");
-    expect(toolMsg?.content).toMatch(/no handler/);
-    expect(out.text).toBe("done");
+
+    expect(signals).toEqual([controller.signal]);
   });
 });
 
-describe("per-adapter parseStream", () => {
-  it("openai-chat: emits deltas and finish; accumulates tool-call args", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    const sse =
-      'data: {"choices":[{"delta":{"content":"he"}},{}]}' + "\n\n" +
-      'data: {"choices":[{"delta":{"content":"llo"},"finish_reason":"stop"}]}' + "\n\n" +
-      'data: [DONE]' + "\n\n";
-    const wrappedFetch = (async () => new Response(makeStream(sse), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
+describe("provider-native tool streaming", () => {
+  it("OpenAI Chat accumulates tool arguments once", async () => {
+    const client = createLappClient({
+      profile: profile("openai-chat-completions"),
+      fetchImpl: async () => sse([
+        JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "add", arguments: "{\"a\":" } }] } }] }),
+        JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "1,\"b\":2}" } }] }, finish_reason: "tool_calls" }] }),
+        "[DONE]",
+      ]),
+    });
+
     const events = [];
-    for await (const ev of c.stream({ messages: [{ role: "user", content: "x" }] })) events.push(ev);
-    const deltas = events.filter((e) => e.kind === "delta");
-    expect(deltas.map((d) => (d as { text: string }).text).join("")).toBe("hello");
-    expect(events.some((e) => e.kind === "finish" && (e as { reason: string }).reason === "stop")).toBe(true);
+    for await (const event of client.stream({ messages: [{ role: "user", content: "add" }] })) events.push(event);
+
+    expect(events.filter((event) => event.kind === "tool-call")).toEqual([
+      { kind: "tool-call", id: "call_1", name: "add", arguments: "{\"a\":1,\"b\":2}" },
+    ]);
   });
 
-  it("openai-responses: emits deltas on response.output_text.delta and finish on response.completed", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "openai-responses", baseUrl: "https://x", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    const sse =
-      'data: {"type":"response.output_text.delta","delta":"foo"}' + "\n\n" +
-      'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}' + "\n\n";
-    const wrappedFetch = (async () => new Response(makeStream(sse), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
+  it("OpenAI Responses correlates by item.id but exposes call_id", async () => {
+    const client = createLappClient({
+      profile: profile("openai-responses"),
+      fetchImpl: async () => sse([
+        JSON.stringify({ type: "response.output_item.added", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "add", arguments: "" } }),
+        JSON.stringify({ type: "response.function_call_arguments.delta", item_id: "fc_1", delta: "{\"a\":1,\"b\":2}" }),
+        JSON.stringify({ type: "response.completed", response: { status: "completed" } }),
+      ]),
+    });
+
     const events = [];
-    for await (const ev of c.stream({ messages: [{ role: "user", content: "x" }] })) events.push(ev);
-    expect(events.some((e) => e.kind === "delta" && (e as { text: string }).text === "foo")).toBe(true);
-    expect(events.some((e) => e.kind === "finish" && (e as { reason: string }).reason === "completed")).toBe(true);
+    for await (const event of client.stream({ messages: [{ role: "user", content: "add" }] })) events.push(event);
+
+    expect(events.filter((event) => event.kind === "tool-call")).toEqual([
+      { kind: "tool-call", id: "call_1", name: "add", arguments: "{\"a\":1,\"b\":2}" },
+    ]);
   });
 
-  it("anthropic-messages: emits deltas on content_block_delta text_delta", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "anthropic-messages", baseUrl: "https://api.anthropic.com", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    const sse =
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}' + "\n\n" +
-      'data: {"type":"message_stop"}' + "\n\n";
-    const wrappedFetch = (async () => new Response(makeStream(sse), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
+  it("Anthropic emits tool_use with the provider call id", async () => {
+    const client = createLappClient({
+      profile: profile("anthropic-messages", { type: "header", name: "x-api-key", secret: "secret" }),
+      fetchImpl: async () => sse([
+        JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "add" } }),
+        JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"a\":1,\"b\":2}" } }),
+        JSON.stringify({ type: "message_stop" }),
+      ]),
+    });
+
     const events = [];
-    for await (const ev of c.stream({ messages: [{ role: "user", content: "x" }] })) events.push(ev);
-    expect(events.some((e) => e.kind === "delta" && (e as { text: string }).text === "hi")).toBe(true);
-    expect(events.some((e) => e.kind === "finish" && (e as { reason: string }).reason === "stop")).toBe(true);
-  });
+    for await (const event of client.stream({ messages: [{ role: "user", content: "add" }] })) events.push(event);
 
-  it("allows stream even when model capabilities omit `stream` (adapter check is authoritative)", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat", capabilities: ["chat"] });
-    const sse = 'data: {"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n' +
-      'data: [DONE]\n\n';
-    const wrappedFetch = (async () => new Response(makeStream(sse), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wrappedFetch });
-    const events = [];
-    for await (const ev of c.stream({ messages: [{ role: "user", content: "x" }] })) events.push(ev);
-    expect(events.some((e) => e.kind === "delta" && (e as { text: string }).text === "ok")).toBe(true);
-  });
-});
-
-// Regression coverage for the streaming tool-call bugs caught in the Round 4
-// review: (1) the in-loop + post-loop flush both yielded tool calls on a
-// normal completion (accumulator never cleared), and (2) the openai-responses
-// stream keyed the accumulator by `item.call_id` while deltas correlate by
-// `item.id` (the Responses API uses distinct identifiers for these).
-describe("streaming tool-call regressions", () => {
-  it("openai-chat: yields each tool-call exactly once on a normal completion", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    const sse =
-      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"f","arguments":"{\\"x\\":"}}]}}]}' + "\n\n" +
-      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":"tool_calls"}]}' + "\n\n" +
-      'data: [DONE]' + "\n\n";
-    const wf = (async () => new Response(makeStream(sse), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wf });
-    const events: any[] = [];
-    for await (const ev of c.stream({ messages: [{ role: "user", content: "x" }] })) events.push(ev);
-    expect(events.filter((e) => e.kind === "tool-call")).toHaveLength(1);
-  });
-
-  it("openai-chat: truncated stream still flushes tool calls when no finish_reason arrives", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "openai-chat-completions", baseUrl: "https://x", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    const sse =
-      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"f","arguments":"{\\"x\\":1}"}}]}}]}' + "\n\n";
-    const wf = (async () => new Response(makeStream(sse), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wf });
-    const events: any[] = [];
-    for await (const ev of c.stream({ messages: [{ role: "user", content: "x" }] })) events.push(ev);
-    expect(events.filter((e) => e.kind === "tool-call")).toHaveLength(1);
-  });
-
-  it("openai-responses: deltas keyed by item.id (not call_id) accumulate correctly", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "openai-responses", baseUrl: "https://x", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    // Real OpenAI Responses stream: item.id="fc_1" (output item id), item.call_id="call_1".
-    // Deltas carry top-level item_id="fc_1". Previous keying-by-call_id dropped the args.
-    const sse =
-      'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f","arguments":""}}' + "\n\n" +
-      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"x\\":1}"}' + "\n\n" +
-      'data: {"type":"response.completed","response":{"status":"completed"}}' + "\n\n";
-    const wf = (async () => new Response(makeStream(sse), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wf });
-    const events: any[] = [];
-    for await (const ev of c.stream({ messages: [{ role: "user", content: "x" }] })) events.push(ev);
-    const tc = events.filter((e) => e.kind === "tool-call");
-    expect(tc).toHaveLength(1);
-    expect(tc[0]!.arguments).toBe('{"x":1}');
-  });
-
-  it("anthropic-messages: message_start usage.input_tokens is captured for the usage event", async () => {
-    let p = createProfile({ rootDir: "/tmp/.lapp" });
-    p = upsertProvider(p, { id: "p", protocol: "anthropic-messages", baseUrl: "https://api.anthropic.com", auth: { secret: "sk" } });
-    p = upsertModel(p, { providerId: "p", id: "m", type: "chat" });
-    const sse =
-      'data: {"type":"message_start","message":{"usage":{"input_tokens":42,"output_tokens":1}}}' + "\n\n" +
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}' + "\n\n" +
-      'data: {"type":"message_delta","usage":{"output_tokens":5}}' + "\n\n" +
-      'data: {"type":"message_stop"}' + "\n\n";
-    const wf = (async () => new Response(makeStream(sse), { status: 200 })) as unknown as typeof fetch;
-    const c = createLappClient({ profile: p, provider: "p", model: "m", resolveSecrets: true, fetchImpl: wf });
-    const events: any[] = [];
-    for await (const ev of c.stream({ messages: [{ role: "user", content: "x" }] })) events.push(ev);
-    const usage = events.filter((e) => e.kind === "usage");
-    expect(usage).toHaveLength(1);
-    expect(usage[0]!.inputTokens).toBe(42);
-    expect(usage[0]!.outputTokens).toBe(5);
+    expect(events.filter((event) => event.kind === "tool-call")).toEqual([
+      { kind: "tool-call", id: "toolu_1", name: "add", arguments: "{\"a\":1,\"b\":2}" },
+    ]);
   });
 });

@@ -1,22 +1,58 @@
 # LAPP JS — Claude Code agent guidance
 
-> This file is not user-facing documentation. For guidance on using `lapp-js`, see the [user docs](../getting-started.md) and the archived full version of this guidance at [internal/CLAUDE.md](internal/CLAUDE.md).
+This file is contributor guidance. User documentation starts at
+[`docs/getting-started.md`](docs/getting-started.md); the full contributor
+summary is [`docs/internal/CLAUDE.md`](docs/internal/CLAUDE.md).
 
-When working in this repository, preserve the following invariants. The full historical rationale, architecture, and contributor commands are in [internal/CLAUDE.md](internal/CLAUDE.md).
+## Product contract
 
-## Cross-cutting rules
+- `@openlapp/lapp` is the implementation. Profile parsing, validation, editing,
+  model refresh, connection resolution, persistence, and direct requests belong
+  in the SDK.
+- `@openlapp/cli` is a thin strict-argument and output layer over SDK use cases.
+- A Profile contains standard JSON only: optional `global.json`, and mandatory
+  `provider.json` plus `models.json` for every Provider.
+- `models.json` is authoritative. Refresh is explicit and only adds unknown IDs
+  or missing display names.
+- Public v1 behavior ends at local discovery, connection resolution, optional
+  direct upstream calls, and explicit Profile management.
 
-- **SDK-first design**: all profile parsing, editing, validation, env export, and client request logic belongs in `@openlapp/lapp`. The CLI only parses args, calls the SDK, prints, and redacts.
-- **Disabled providers** (`enabled: false`) are kept in memory so writes can round-trip the on-disk file, but are skipped by the client and by env-export.
-- **Secrets**: redact by default everywhere. Resolving `env://` requires explicit opt-in. The client fails fast on unresolved secrets — never substitute a bogus value.
-- **Auth-header dedup**: adapters strip auth-carrying keys (`authorization`, `x-api-key`) case-insensitively from user `requestHeaders` before adding their own. When `auth.queryParam` is set, header auth is stripped.
-- **URL handling**: never auto-append `/v1` for OpenAI-compatible providers. Anthropic dedups a trailing `/v1` only when it is the sole last segment. `baseUrl` should not end with `/`.
-- **Internal fields**: `__`-prefixed keys are bookkeeping only and stripped on write.
+## Invariants
 
-## Where things live
+- `loadProfile` returns validated domain data; `inspectProfile` is the redacted
+  recovery path for invalid trees.
+- Disabled entries remain in memory but are omitted from normal model listing
+  and rejected during resolution.
+- `listModels` performs no I/O or secret resolution.
+- `selectConnection` is the pure model/alias/default/protocol selector;
+  asynchronous `resolveConnection` adds credential resolution.
+- Authentication is the strict `none | bearer | header | query` union. Real
+  secrets are plaintext, `env://NAME`, or `vault://provider/credential`.
+  High-level writes default to Vault; no credential failure may silently fall
+  back to another form.
+- Vault records bind provider ID, normalized origin, and auth type/name. Direct
+  clients resolve immediately before every request and never cache plaintext
+  for the client lifetime.
+- Static `requestHeaders` contain no authentication or cookies, use names that
+  are unique case-insensitively, and never collide with header authentication.
+- Provider IDs are rejected, never sanitized. Every write/delete must remain
+  under the selected Profile root.
+- Model discovery is same-origin, remote HTTPS or loopback HTTP, and rejects
+  credential-bearing redirects.
+- Core objects reject unknown properties; implementation data belongs in
+  `extensions`.
+- Removing a Provider/model referenced by a default is rejected until the
+  default changes.
 
-- User-facing docs: `docs/*.md`
-- Archived design / build / review records: `docs/internal/*.md`
-- SDK source: `packages/lapp/src/`
-- CLI source: `packages/cli/src/index.ts`
-- Build/test commands: `pnpm build`, `pnpm test`
+## Repository map and checks
+
+- SDK: `packages/lapp/src/`
+- CLI router and commands: `packages/cli/src/index.ts`, `args.ts`, `commands/`
+- User docs: `docs/`
+- Contributor detail: `docs/internal/CLAUDE.md`
+
+Run `pnpm build`, `pnpm lint`, `pnpm test`, `pnpm verify:docs`,
+`pnpm verify:spec`, and `pnpm smoke:pack` before release work. Releases start
+only when a `v*` tag is pushed; both committed package versions must already
+match that tag. Both packages must contain identical English and Chinese user
+agreements. Preserve unrelated dirty-worktree changes.

@@ -1,76 +1,89 @@
-# 协议说明
+# 协议
 
-`lapp-js` v1 支持三种提供者协议。每种协议对应一个适配器，负责构建提供者原生请求并将响应归一化。
+LAPP 协议 ID 告诉应用某个连接使用哪种上游 API 合同。LAPP 负责发现和解析连接，
+不把一种协议转换为另一种。
 
-## 支持的协议
+## 选择规则
 
-| 协议 | 聊天 | 流式 | 工具调用 | 模型列表同步 |
-| --- | --- | --- | --- | --- |
-| `openai-chat-completions` | 是 | 是 | 是 | 是（`GET /models`） |
-| `openai-responses` | 是 | 是 | 是 | 是（`GET /models`） |
-| `anthropic-messages` | 是 | 是 | 是 | 没有公开 API；可设置 `provider.links.models` 覆盖 |
-
-## `openai-chat-completions`
-
-向 `{baseUrl}/chat/completions` 发送 POST 请求，并在 `Authorization` 头中携带 bearer token。
-
-- SDK 不会自动追加 `/v1`。如果需要，请直接写在 `baseUrl` 中。
-- 模型同步使用 `GET {baseUrl}/models`。
-- 兼容任何 OpenAI 兼容服务器，包括 Ollama、LM Studio、vLLM 等。
-
-## `openai-responses`
-
-将简单聊天输入映射到 OpenAI Responses API。
-
-- 向 `{baseUrl}/responses` 发送 POST 请求。
-- v1.0.0 保留 `assistant` 历史消息为 `assistant`（不会重映射为 `developer`）。
-- 模型同步使用 `GET {baseUrl}/models`。
-
-## `anthropic-messages`
-
-将聊天消息映射到 Anthropic Messages API。
-
-- 向 `{baseUrl}/v1/messages` 发送 POST 请求，并携带 `x-api-key` 和 `anthropic-version` 头。
-- 适配器仅当 `/v1` 是最后一个独立段时才会对 `baseUrl` 末尾的 `/v1` 去重。
-- 没有公开的模型列表端点；设置 `provider.links.models` 后可启用同步。
-
-## 能力推断
-
-从提供者同步模型时，能力基于模型 id 前缀和关键词进行尽力而为的启发式推断。例如，id 中包含 `vision` 的模型可能会被赋予 `vision` 能力。
-
-不暴露能力元数据的提供者可以在同步后直接编辑 `models.json` 来补充能力。
-
-## 多协议提供者
-
-一个提供者可以按偏好顺序声明多个协议：
+Provider 声明有序字符串列表：
 
 ```json
 {
-  "id": "openai",
-  "protocols": [
-    { "id": "openai-responses", "baseUrl": "https://api.openai.com/v1" },
-    { "id": "openai-chat-completions", "baseUrl": "https://api.openai.com/v1" }
-  ]
+  "protocols": ["openai-responses", "openai-chat-completions"]
 }
 ```
 
-SDK 选择第一个支持的条目。每个协议级别的 `baseUrl` 和 `requestHeaders` 会合并到提供者级别值之上。
-
-## 本地 / 自托管提供者
-
-任何使用 OpenAI 兼容端点的协议都可以用于本地服务器。典型配置：
+模型可以声明一个非空子集：
 
 ```json
 {
-  "id": "ollama",
-  "protocol": "openai-chat-completions",
-  "baseUrl": "http://localhost:11434/v1",
-  "auth": { "type": "none" }
+  "id": "gpt-4o-mini",
+  "protocols": ["openai-responses"]
 }
 ```
 
-CLI 中使用 `lapp provider add` 时加 `--no-auth`（或用 `ollama`/`lm-studio`/`vllm` 预设,它们自动设好）。分步示例见 [local-providers.md](local-providers.md)。
+`resolveConnection()` 优先使用模型列表，否则使用 Provider 列表。它选择第一个
+包含在调用方 `supportedProtocols` 中的候选项；没有该选项时选择第一个候选项。
+没有交集时抛出 code 为 `PROTOCOL_NOT_SUPPORTED` 的
+`TargetResolutionError`。
 
-## 不支持的协议
+协议项只是字符串。地址、认证和静态请求头都是 Provider 级字段。
 
-如果提供者的协议不受支持，SDK 会抛出 `UnsupportedProtocolError`。运行时可用 `isSupportedProtocol(protocol)` 检查。
+## 内置直连协议
+
+`createLappClient()` 实现三种聊天协议：
+
+| 协议 | 请求地址 | 聊天 | 流式 | 工具 |
+|------|----------|------|------|------|
+| `openai-chat-completions` | `{baseUrl}/chat/completions` | 是 | 是 | 是 |
+| `openai-responses` | `{baseUrl}/responses` | 是 | 是 | 是 |
+| `anthropic-messages` | `{baseUrl}/v1/messages` | 是 | 是 | 是 |
+
+`baseUrl` 按配置使用；OpenAI-compatible adapter 不会自动插入 `/v1`。Endpoint
+通过 URL pathname 追加，因此配置中的 query 参数会保留。调用者未提供
+值时，Anthropic 请求使用 `max_tokens: 4096`，并包含
+`anthropic-version: 2023-06-01`。
+
+认证完全来自 Provider 的严格 `auth` 对象，不由协议 ID 隐式决定。
+
+应用可以保存和解析其他合法协议 ID。将应用实现的协议通过
+`resolveConnection(..., { supportedProtocols })` 传入。内置客户端会传入自己的三协议
+集合；没有可用交集时返回类型化的目标/协议错误，不会猜测 adapter。
+
+## 模型发现协议
+
+模型发现独立于连接协议配置：
+
+```json
+{
+  "modelDiscovery": {
+    "protocol": "openai-models",
+    "url": "https://api.example.com/v1/models"
+  }
+}
+```
+
+- **`openai-models`** 要求响应
+  `{ "data": [{ "id": "...", "name"?: "..." }] }`，不分页。
+- **`anthropic-models`** 要求响应
+  `{ "data": [{ "id": "...", "display_name"?: "..." }], "has_more"?: boolean, "last_id"?: string }`，
+  并使用 `after_id=<last_id>` 继续分页。
+
+SDK 会严格验证每一页。非法 JSON、非法条目、重复 ID、不前进的 cursor 和 HTTP
+错误都会让刷新失败，Profile 保持不变。
+
+发现 URL 必须与 `baseUrl` 同源。远端发现使用 HTTPS，loopback 可以使用 HTTP。
+携带凭据的请求使用 `redirect: "error"`。
+
+## 刷新语义
+
+`refreshModels()` 返回新的内存 Profile，绝不自行写盘。它会：
+
+- 保留现有模型顺序和字段；
+- 在远端目录提供名称时补充当前缺失的显示名称；
+- 按 ID 排序追加之前未知的模型；
+- 永不删除已有 ID；
+- 将合法空列表视为无变化。
+
+CLI 的 `lapp models refresh` 采用相同行为；只有同时使用 `--apply` 和 `--yes`
+才会写盘。

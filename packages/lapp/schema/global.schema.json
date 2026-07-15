@@ -1,25 +1,40 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lapp.dev/schema/global.schema.json",
-  "title": "LAPP global.json",
+  "$id": "https://lapp.dev/schema/1.0/global.schema.json",
+  "title": "LAPP v1 global.json",
   "type": "object",
-  "additionalProperties": true,
+  "required": ["schemaVersion", "defaults"],
+  "additionalProperties": false,
   "properties": {
-    "schemaVersion": { "type": "string" },
-    "defaultModel": { "$ref": "#/$defs/modelRef" },
-    "defaultEmbeddingModel": { "$ref": "#/$defs/modelRef" },
-    "defaultImageModel": { "$ref": "#/$defs/modelRef" },
-    "defaultTextToSpeechModel": { "$ref": "#/$defs/modelRef" },
-    "defaultVideoModel": { "$ref": "#/$defs/modelRef" }
+    "schemaVersion": { "const": "1.0" },
+    "defaults": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/modelRef" }
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
   },
   "$defs": {
     "modelRef": {
       "type": "object",
-      "required": ["providerId", "model"],
-      "additionalProperties": true,
+      "required": ["providerId", "modelId"],
+      "additionalProperties": false,
       "properties": {
-        "providerId": { "type": "string", "minLength": 1 },
-        "model": { "type": "string", "minLength": 1 }
+        "providerId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "modelId": {
+          "type": "string",
+          "pattern": "^(?!\\s*$)[^\\u0000-\\u001F\\u007F]+$"
+        }
       }
     }
   }

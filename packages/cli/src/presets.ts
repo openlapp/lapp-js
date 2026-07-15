@@ -9,7 +9,7 @@
  *   lapp provider add --id openai --model gpt-4o-mini --yes
  *
  * instead of typing the three constant flags (`--protocol`, `--base-url`,
- * `--secret`) that are identical for every OpenAI user.
+ * credential-storage details that are identical for every OpenAI user.
  *
  * This module is deliberately CLI-only: the SDK (`@openlapp/lapp`) stays
  * preset-agnostic and never imports provider names. `applyPreset` produces a
@@ -21,29 +21,23 @@
  * one edits `provider.json` by hand.
  */
 
-export interface PresetProtocolObject {
-  id: string;
-  baseUrl?: string;
-  requestHeaders?: Record<string, string>;
-  capabilities?: string[];
-  [extra: string]: unknown;
-}
-
 export interface ProviderPreset {
   /** Stable id; the key in `PRESETS`. Used as the provider id by default. */
   id: string;
   /** Human-readable name shown by `lapp presets`. */
   displayName: string;
   /**
-   * Ordered `protocols[]` entries, in spec preference order (first = preferred
-   * fallback target). String entries inherit the preset `baseUrl`; object
-   * entries may carry their own `baseUrl` / `requestHeaders` / `capabilities`.
+   * Ordered `protocols[]` entries. Applications select the first entry they
+   * support.
    */
-  protocols: Array<string | PresetProtocolObject>;
-  /** Default base URL applied to string-form protocol entries. */
+  protocols: string[];
   baseUrl: string;
+  /** Remote model-list response shape. */
+  modelDiscoveryProtocol?: "openai-models" | "anthropic-models";
   /** Suggested secret reference, e.g. `env://OPENAI_API_KEY`. Undefined for noAuth. */
   suggestedSecret?: string;
+  authType?: "bearer" | "header";
+  authName?: string;
   /** True for local providers (Ollama / LM Studio / vLLM) that carry no secret. */
   noAuth?: boolean;
   /** Optional default chat model to seed via `--model` in `provider add`. */
@@ -59,9 +53,10 @@ export const PRESETS: Record<string, ProviderPreset> = {
     // Prefer the Responses API; fall back to Chat Completions.
     protocols: ["openai-responses", "openai-chat-completions"],
     baseUrl: "https://api.openai.com/v1",
+    modelDiscoveryProtocol: "openai-models",
     suggestedSecret: "env://OPENAI_API_KEY",
     defaultModel: "gpt-4o-mini",
-    notes: "Responses API preferred; Chat Completions used as fallback.",
+    notes: "Responses API is preferred when the application supports it.",
   },
   anthropic: {
     id: "anthropic",
@@ -69,7 +64,10 @@ export const PRESETS: Record<string, ProviderPreset> = {
     protocols: ["anthropic-messages"],
     // Anthropic's adapter dedups a trailing /v1; the spec baseUrl has none.
     baseUrl: "https://api.anthropic.com",
+    modelDiscoveryProtocol: "anthropic-models",
     suggestedSecret: "env://ANTHROPIC_API_KEY",
+    authType: "header",
+    authName: "x-api-key",
     defaultModel: "claude-sonnet-4",
   },
   deepseek: {
@@ -77,6 +75,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "DeepSeek",
     protocols: ["openai-chat-completions"],
     baseUrl: "https://api.deepseek.com/v1",
+    modelDiscoveryProtocol: "openai-models",
     suggestedSecret: "env://DEEPSEEK_API_KEY",
     defaultModel: "deepseek-chat",
   },
@@ -85,6 +84,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "OpenRouter",
     protocols: ["openai-chat-completions"],
     baseUrl: "https://openrouter.ai/api/v1",
+    modelDiscoveryProtocol: "openai-models",
     suggestedSecret: "env://OPENROUTER_API_KEY",
   },
   ollama: {
@@ -92,6 +92,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "Ollama (local)",
     protocols: ["openai-chat-completions"],
     baseUrl: "http://localhost:11434/v1",
+    modelDiscoveryProtocol: "openai-models",
     noAuth: true,
     notes: "Local; start with `ollama serve`.",
   },
@@ -100,6 +101,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "LM Studio (local)",
     protocols: ["openai-chat-completions"],
     baseUrl: "http://localhost:1234/v1",
+    modelDiscoveryProtocol: "openai-models",
     noAuth: true,
   },
   vllm: {
@@ -107,6 +109,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "vLLM (local)",
     protocols: ["openai-chat-completions"],
     baseUrl: "http://localhost:8000/v1",
+    modelDiscoveryProtocol: "openai-models",
     noAuth: true,
   },
   kimi: {
@@ -114,6 +117,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "Kimi / Moonshot",
     protocols: ["openai-chat-completions"],
     baseUrl: "https://api.moonshot.cn/v1",
+    modelDiscoveryProtocol: "openai-models",
     suggestedSecret: "env://MOONSHOT_API_KEY",
   },
   // `moonshot` is an alias of `kimi` for users who think in provider terms.
@@ -122,6 +126,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "Moonshot",
     protocols: ["openai-chat-completions"],
     baseUrl: "https://api.moonshot.cn/v1",
+    modelDiscoveryProtocol: "openai-models",
     suggestedSecret: "env://MOONSHOT_API_KEY",
   },
   minimax: {
@@ -129,6 +134,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "MiniMax",
     protocols: ["openai-chat-completions"],
     baseUrl: "https://api.minimaxi.com/v1",
+    modelDiscoveryProtocol: "openai-models",
     suggestedSecret: "env://MINIMAX_API_KEY",
   },
   siliconflow: {
@@ -136,6 +142,7 @@ export const PRESETS: Record<string, ProviderPreset> = {
     displayName: "SiliconFlow",
     protocols: ["openai-chat-completions"],
     baseUrl: "https://api.siliconflow.cn/v1",
+    modelDiscoveryProtocol: "openai-models",
     suggestedSecret: "env://SILICONFLOW_API_KEY",
   },
 };
@@ -155,7 +162,10 @@ export function listPresets(): ProviderPreset[] {
  * `ProviderConfig["auth"]` the CLI constructs: either `none` (no secret) or a
  * `secret` reference (bearer, the spec default when `type` is omitted).
  */
-export type PresetAuth = { type: "none" } | { secret: string };
+export type PresetAuth =
+  | { type: "none" }
+  | { type: "bearer"; secret: string }
+  | { type: "header"; name: string; secret: string };
 
 /** A resolved preset ready to hand to `upsertProvider`. */
 export interface PresetResolution {
@@ -163,9 +173,12 @@ export interface PresetResolution {
   input: {
     id: string;
     baseUrl: string;
-    /** Always object-form entries, normalized from the preset's mixed list. */
-    protocols: PresetProtocolObject[];
-    auth?: PresetAuth;
+    protocols: string[];
+    auth: PresetAuth;
+    modelDiscovery?: {
+      protocol: "openai-models" | "anthropic-models";
+      url: string;
+    };
     /** Default chat model, if the preset (or override) specifies one. */
     defaultModel?: string;
   };
@@ -174,7 +187,7 @@ export interface PresetResolution {
 export interface PresetOverrides {
   /** Override the preset base URL. */
   baseUrl?: string;
-  /** Override the suggested secret (e.g. a user-supplied `--secret`). */
+  /** Override the suggested secret reference for programmatic preset use. */
   secret?: string;
   /** Force no-auth (e.g. a user-supplied `--no-auth`). */
   noAuth?: boolean;
@@ -183,9 +196,7 @@ export interface PresetOverrides {
 }
 
 /**
- * Resolve a preset id into a `ProviderInput`-shaped object. Normalizes string
- * protocol entries into objects so `upsertProvider` stores a uniform
- * `protocols[]`. Overrides take precedence over preset defaults.
+ * Resolve a preset id into a `ProviderInput`-shaped object.
  *
  * Throws on an unknown preset id.
  */
@@ -195,30 +206,42 @@ export function applyPreset(id: string, overrides: PresetOverrides = {}): Preset
 
   const baseUrl = overrides.baseUrl ?? preset.baseUrl;
 
-  const protocols: PresetProtocolObject[] = preset.protocols.map((p) =>
-    typeof p === "string"
-      ? { id: p, baseUrl }
-      : { ...p, baseUrl: p.baseUrl ?? baseUrl },
-  );
-
-  let auth: PresetAuth | undefined;
+  let auth: PresetAuth;
   if (overrides.noAuth || preset.noAuth) {
     auth = { type: "none" };
   } else if (overrides.secret) {
-    auth = { secret: overrides.secret };
+    auth = preset.authType === "header"
+      ? { type: "header", name: preset.authName!, secret: overrides.secret }
+      : { type: "bearer", secret: overrides.secret };
   } else if (preset.suggestedSecret) {
-    auth = { secret: preset.suggestedSecret };
+    auth = preset.authType === "header"
+      ? { type: "header", name: preset.authName!, secret: preset.suggestedSecret }
+      : { type: "bearer", secret: preset.suggestedSecret };
+  } else {
+    throw new Error(`preset has no authentication policy: ${id}`);
   }
 
   const defaultModel = overrides.model ?? preset.defaultModel;
+  const discoveryBase = baseUrl.replace(/\/$/, "");
+  const discoverySuffix = preset.modelDiscoveryProtocol === "anthropic-models" && !discoveryBase.endsWith("/v1")
+    ? "/v1/models"
+    : "/models";
 
   return {
     preset,
     input: {
       id,
       baseUrl,
-      protocols,
-      ...(auth ? { auth } : {}),
+      protocols: [...preset.protocols],
+      auth,
+      ...(preset.modelDiscoveryProtocol
+        ? {
+            modelDiscovery: {
+              protocol: preset.modelDiscoveryProtocol,
+              url: `${discoveryBase}${discoverySuffix}`,
+            },
+          }
+        : {}),
       ...(defaultModel ? { defaultModel } : {}),
     },
   };

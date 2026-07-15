@@ -1,97 +1,94 @@
 # Local providers
 
-`lapp-js` works with any OpenAI-compatible local server. This guide covers Ollama, LM Studio, and vLLM.
+LAPP works with local servers that implement one of the declared connection
+protocols. The bundled presets cover Ollama, LM Studio, and vLLM through their
+OpenAI-compatible endpoints.
 
-## Why `allowUnauthenticated`?
-
-Local servers usually do not require an API key. `allowUnauthenticated: true` tells the SDK to skip the auth header. The SDK still fails fast on other resolve errors.
-
-In the CLI, use `--no-auth` when creating or adding a provider.
+Loopback HTTP is allowed. Use `{ "type": "none" }` authentication only when the
+local server genuinely requires no credential.
 
 ## Ollama
 
-Add a provider pointing at Ollama's OpenAI-compatible endpoint (the `ollama` preset fills in the protocol and base URL; `--no-auth` is implied):
+Start Ollama, then register and refresh it:
 
 ```bash
 lapp provider add --id ollama --yes
+lapp models refresh --provider ollama
+lapp models refresh --provider ollama --apply --yes
+lapp models list --provider ollama
 ```
 
-Or fully explicit:
+Choose a returned model explicitly:
 
 ```bash
-lapp provider add --id ollama \
-  --protocol openai-chat-completions \
-  --base-url http://localhost:11434/v1 \
-  --no-auth --yes
+lapp default set --task chat --provider ollama --model <returned-id> --yes
+lapp chat "Hello, Ollama" --default chat
 ```
 
-Pull the model list and set the first chat model as the default in one go:
-
-```bash
-lapp models sync --provider ollama --apply --set-default --yes
-```
-
-Chat (no-auth providers are auto-allowed by `lapp chat` / `lapp ping`):
-
-```bash
-lapp chat "Hello, Ollama."
-lapp chat ollama/llama3 "Hello, Ollama."
-```
-
-Ollama returns `name` in addition to `id`; both are accepted.
-
-## LM Studio
-
-LM Studio exposes an OpenAI-compatible server on a local port (often `1234`). Use the `lm-studio` preset:
-
-```bash
-lapp provider add --id lm-studio --yes
-lapp models sync --provider lm-studio --apply --set-default --yes
-```
-
-Or fully explicit (with a known model id):
+The equivalent explicit provider command is:
 
 ```bash
 lapp provider add \
-  --id lm-studio \
+  --id ollama \
   --protocol openai-chat-completions \
-  --base-url http://localhost:1234/v1 \
-  --no-auth --model local-model --yes
+  --base-url http://localhost:11434/v1 \
+  --no-auth \
+  --models-protocol openai-models \
+  --models-url http://localhost:11434/v1/models \
+  --yes
 ```
+
+## LM Studio
+
+Enable its local API server, then run:
+
+```bash
+lapp provider add --id lm-studio --yes
+lapp models refresh --provider lm-studio --apply --yes
+lapp models list --provider lm-studio
+lapp default set --task chat --provider lm-studio --model <returned-id> --yes
+```
+
+The preset uses `http://localhost:1234/v1`.
 
 ## vLLM
 
-vLLM's OpenAI-compatible server typically runs on port `8000`. Use the `vllm` preset:
+With vLLM listening on its usual port:
 
 ```bash
 lapp provider add --id vllm --yes
-lapp models sync --provider vllm --apply --set-default --yes
+lapp models refresh --provider vllm --apply --yes
+lapp models list --provider vllm
+lapp default set --task chat --provider vllm --model <returned-id> --yes
 ```
 
-## SDK example
+The preset uses `http://localhost:8000/v1`.
+
+## SDK use
+
+No special unauthenticated switch is needed. `auth.type: "none"` is the entire
+policy:
 
 ```ts
-import { loadProfile, createLappClient } from "@openlapp/lapp";
+import { createLappClient, loadProfile } from "@openlapp/lapp";
 
 const profile = loadProfile();
 const client = createLappClient({
   profile,
   provider: "ollama",
-  model: "llama3",
-  allowUnauthenticated: true,
+  model: "<returned-id>",
 });
 
-const resp = await client.chat({
-  messages: [{ role: "user", content: "Hello!" }],
+const response = await client.chat({
+  messages: [{ role: "user", content: "Hello" }],
 });
-console.log(resp.text);
 ```
 
-## Caveats
+## Troubleshooting
 
-- The SDK still fails fast on other resolve errors even with `allowUnauthenticated`.
-- `lapp chat` and `lapp ping` auto-allow-unauthenticated for providers with `auth.type: "none"` / no secret, so the local flow works without extra flags.
-- The CLI automatically passes `allowUnauthenticated: true` during `lapp models sync` so local providers work without extra flags.
-- Capability inference for synced local models is best-effort. Edit `models.json` directly to add capabilities the provider does not advertise.
-
-For protocol details, see [protocols.md](protocols.md). For security guidance, see [security.md](security.md).
+- Refresh requires `modelDiscovery` in `provider.json`; presets configure it.
+- The discovery URL and `baseUrl` must use the same origin.
+- A valid empty remote list changes nothing.
+- Existing local models and metadata are never removed or overwritten.
+- If a server advertises incomplete capabilities, edit the authoritative
+  `models.json` entry yourself.

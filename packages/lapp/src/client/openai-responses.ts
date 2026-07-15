@@ -15,12 +15,9 @@ import type {
   ParsedToolCall,
   ProtocolAdapter,
 } from "./adapter.js";
+import { assertSafeExtra, isRecord, parseToolArguments } from "./adapter.js";
 import { parseSse } from "./sse.js";
-import { buildAuthHeaders } from "./http.js";
-
-function joinUrl(base: string, suffix: string): string {
-  return `${base.replace(/\/+$/, "")}${suffix}`;
-}
+import { appendUrlPath, buildAuthHeaders } from "./http.js";
 
 function buildInputItems(messages: ChatInput["messages"]): Array<Record<string, unknown>> {
   return messages.flatMap((m): Array<Record<string, unknown>> => {
@@ -37,15 +34,15 @@ function buildInputItems(messages: ChatInput["messages"]): Array<Record<string, 
       }];
     }
     if (m.role === "assistant" && m.toolCalls?.length) {
-      return [{
-        role: "assistant",
-        content: m.content,
-        tool_calls: m.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: "function",
-          function: { name: tc.name, arguments: tc.arguments },
+      return [
+        ...(m.content ? [{ role: "assistant", content: m.content }] : []),
+        ...m.toolCalls.map((tc) => ({
+          type: "function_call",
+          call_id: tc.id,
+          name: tc.name,
+          arguments: tc.arguments,
         })),
-      }];
+      ];
     }
     return [{ role: m.role, content: m.content }];
   });
@@ -56,18 +53,11 @@ function parseToolCalls(toolCalls: unknown): ParsedToolCall[] | undefined {
   const out: ParsedToolCall[] = [];
   for (const tc of toolCalls) {
     const rawArgs = typeof tc.function?.arguments === "string" ? tc.function.arguments : "";
-    let args: Record<string, unknown> = {};
-    let parseError: string | undefined;
-    try {
-      args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
-    } catch {
-      parseError = "invalid JSON in tool_call arguments";
-    }
+    const parsed = parseToolArguments(rawArgs);
     out.push({
       id: String(tc.id ?? ""),
       name: String(tc.function?.name ?? ""),
-      arguments: args,
-      ...(parseError ? { parseError, argumentsRaw: rawArgs } : {}),
+      ...parsed,
     });
   }
   return out.length ? out : undefined;
@@ -77,9 +67,10 @@ export const openaiResponsesAdapter: ProtocolAdapter = {
   protocol: "openai-responses",
 
   buildRequest(input: ChatInput, ctx: AdapterContext): AdapterRequest {
+    assertSafeExtra(input.extra);
     const systemMessages = input.messages.filter((m) => m.role === "system");
     const body: Record<string, unknown> = {
-      model: input.model ?? ctx.model,
+      model: ctx.model,
       input: buildInputItems(input.messages),
       ...(systemMessages.length > 0
         ? { instructions: systemMessages.map((m) => m.content).join("\n\n") }
@@ -94,7 +85,7 @@ export const openaiResponsesAdapter: ProtocolAdapter = {
       ...(input.extra ?? {}),
     };
     return {
-      url: joinUrl(ctx.baseUrl, "/responses"),
+      url: appendUrlPath(ctx.baseUrl, "/responses"),
       method: "POST",
       headers: buildAuthHeaders(ctx),
       body,
@@ -103,6 +94,46 @@ export const openaiResponsesAdapter: ProtocolAdapter = {
   },
 
   parseResponse(raw: unknown, ctx: AdapterContext): LappResponse {
+    if (
+      !isRecord(raw)
+      || typeof raw.status !== "string"
+      || !Array.isArray(raw.output)
+      || raw.output.some((item) => !isRecord(item))
+    ) {
+      throw new Error("invalid openai-responses response");
+    }
+    for (const item of raw.output) {
+      if (typeof item.type !== "string") {
+        throw new Error("invalid openai-responses response");
+      }
+      if (item.content !== undefined && (
+        !Array.isArray(item.content)
+        || item.content.some((content: unknown) => (
+          !isRecord(content)
+          || typeof content.type !== "string"
+          || (content.type === "output_text" && typeof content.text !== "string")
+        ))
+      )) {
+        throw new Error("invalid openai-responses response");
+      }
+      if (item.type === "function_call" && (
+        typeof item.call_id !== "string"
+        || typeof item.name !== "string"
+        || typeof item.arguments !== "string"
+      )) {
+        throw new Error("invalid openai-responses response");
+      }
+    }
+    if (raw.model !== undefined && typeof raw.model !== "string") {
+      throw new Error("invalid openai-responses response");
+    }
+    if (raw.usage !== undefined && (
+      !isRecord(raw.usage)
+      || [raw.usage.input_tokens, raw.usage.output_tokens, raw.usage.total_tokens]
+        .some((value) => value !== undefined && typeof value !== "number")
+    )) {
+      throw new Error("invalid openai-responses response");
+    }
     const r = raw as {
       output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }>; call_id?: string; name?: string; arguments?: string }>;
       output_text?: string;
@@ -159,7 +190,7 @@ export const openaiResponsesAdapter: ProtocolAdapter = {
       const chunk = parsed as {
         type?: string;
         delta?: string;
-        item?: { type?: string; call_id?: string; name?: string; arguments?: string };
+        item?: { type?: string; id?: string; call_id?: string; name?: string; arguments?: string };
         response?: { status?: string; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } };
       };
 
@@ -172,8 +203,12 @@ export const openaiResponsesAdapter: ProtocolAdapter = {
         // `item.id` (the function_call output item id, e.g. "fc_123"), NOT
         // `item.call_id` ("call_123"). Key the accumulator by `item.id` so
         // the subsequent `function_call_arguments.delta` lookup hits.
-        const id = (chunk.item as { id?: string }).id ?? chunk.item.call_id ?? "";
-        toolCallAcc[id] = { id, name: chunk.item.name ?? "", args: chunk.item.arguments ?? "" };
+        const itemId = chunk.item.id ?? chunk.item.call_id ?? "";
+        toolCallAcc[itemId] = {
+          id: chunk.item.call_id ?? "",
+          name: chunk.item.name ?? "",
+          args: chunk.item.arguments ?? "",
+        };
       }
 
       if (chunk.type === "response.function_call_arguments.delta") {

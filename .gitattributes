@@ -1,0 +1,3 @@
+# Canonical agreements intentionally use Markdown's two-space hard line break.
+packages/lapp/USER_AGREEMENT.*.md whitespace=-trailing-space
+packages/cli/USER_AGREEMENT.*.md whitespace=-trailing-space

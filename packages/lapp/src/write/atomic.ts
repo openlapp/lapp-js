@@ -1,235 +1,196 @@
-/**
- * Atomic profile writer.
- *
- * Implements the atomic write rule from `docs/sdk-cli-design.md` §3:
- *   1. Build complete content in memory.
- *   2. Validate before writing.
- *   3. Write to a hidden temporary file in the same directory as the target.
- *   4. Close the temporary file.
- *   5. Rename it over the target path.
- *   6. On failure, best-effort remove only the temporary file.
- *
- * No temp directory, no backups, no rollback. New files are written as `.json`.
- */
-
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { LappProfile } from "../types.js";
+import { ProfileValidationError } from "../types.js";
 import { validateProfile } from "../validate/index.js";
-import type { LappProfile, LappProvider } from "../types.js";
-import { planChanges } from "../plan.js";
+import { profileRoot } from "../profile-location.js";
 
 export interface WriteOptions {
-  /** Skip pre-write validation. Not recommended. */
-  skipValidate?: boolean;
-  /** Pretty-print indent (default 2). */
+  path?: string;
   indent?: number;
-  /** Append a trailing newline (default true). */
   trailingNewline?: boolean;
-  /**
-   * The on-disk profile state BEFORE the edit. When provided, files that
-   * exist in `before` but no longer appear in `after` are unlinked, so the
-   * remove flow doesn't leave orphan provider.json / models.json behind.
-   * Skips silently if null/undefined.
-   */
   before?: LappProfile | null;
 }
 
-function stableStringify(value: unknown, indent: number, trailingNewline: boolean): string {
-  // JSON.stringify with a replacer that sorts object keys for deterministic output.
-  // Cycle detection is path-aware: the `ancestors` Set tracks objects on the current
-  // traversal path. A shared (non-circular) reference under a sibling is NOT
-  // considered circular — we only flag a back-edge to an object already on the
-  // path. This avoids emitting the literal string "[Circular]" for legitimately
-  // shared sub-objects (e.g. two model entries referencing the same capabilities
-  // array).
-  const ancestors = new WeakSet<object>();
-  const sort = (v: unknown): unknown => {
-    if (v === null || typeof v !== "object") return v;
-    if (Array.isArray(v)) {
-      if (ancestors.has(v)) return "[Circular]";
-      ancestors.add(v);
-      const out = v.map(sort);
-      ancestors.delete(v);
-      return out;
-    }
-    if (ancestors.has(v as object)) return "[Circular]";
-    ancestors.add(v as object);
-    const obj = v as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(obj).sort()) {
-      // Skip internal bookkeeping fields (prefixed with __).
-      if (key.startsWith("__")) continue;
-      out[key] = sort(obj[key]);
-    }
-    ancestors.delete(v as object);
-    return out;
-  };
-  const text = JSON.stringify(sort(value), null, indent);
+function sorted(value: unknown, ancestors = new WeakSet<object>()): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (ancestors.has(value)) throw new TypeError("profile contains a circular value");
+  ancestors.add(value);
+  const result = Array.isArray(value)
+    ? value.map((entry) => sorted(entry, ancestors))
+    : Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, entry]) => [key, sorted(entry, ancestors)]),
+      );
+  ancestors.delete(value);
+  return result;
+}
+
+function stringify(value: unknown, indent: number, trailingNewline: boolean): string {
+  const text = JSON.stringify(sorted(value), null, indent);
   return trailingNewline ? `${text}\n` : text;
 }
 
-let atomicCounter = 0;
-function randomSuffix(): string {
-  // 6-byte random suffix in base36. crypto is available in Node 18+;
-  // we avoid requiring the async API for a sync writer.
-  return Math.floor(Math.random() * 0xffffffff).toString(36);
+function assertContained(root: string, target: string): string {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`profile path escapes root: ${target}`);
+  }
+  let current = resolvedRoot;
+  for (const segment of relative.split(path.sep)) {
+    current = path.join(current, segment);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`profile path contains a symbolic link or junction: ${current}`);
+    }
+    if (current !== resolvedTarget && !stat.isDirectory()) {
+      throw new Error(`profile path component is not a directory: ${current}`);
+    }
+  }
+  return resolvedTarget;
 }
 
-function atomicWriteFile(target: string, content: string): void {
-  const dir = path.dirname(target);
-  fs.mkdirSync(dir, { recursive: true });
-  // The temp filename must be unique even across concurrent writes in the
-  // same process (e.g. Promise.all([writeProfileAtomic(a), writeProfileAtomic(b)]))
-  // — using only process.pid lets two writes in the same process clobber each
-  // other's temp file. Include a counter + a random suffix to make the path
-  // distinct per call.
-  const tmp = path.join(
-    dir,
-    `.${path.basename(target)}.${process.pid}.${atomicCounter++}.${randomSuffix()}.tmp`,
-  );
-  let fd: number | undefined;
+function atomicWrite(root: string, target: string, value: unknown, content: string): void {
+  let safeTarget = assertContained(root, target);
+  let current: string | undefined;
   try {
-    fd = fs.openSync(tmp, "w", 0o600);
-    fs.writeFileSync(fd, content, "utf8");
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fd = undefined;
-    fs.renameSync(tmp, target);
-  } catch (err) {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-    }
-    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
-    throw err;
+    current = fs.readFileSync(safeTarget, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  // If a legacy .jsonc with the same base name is being replaced by .json,
-  // remove it AFTER the rename succeeded. Removing it before would violate
-  // the atomic-write contract: a failure in openSync/writeSync/fsync/rename
-  // would otherwise leave the base name with no config file on disk.
-  if (target.endsWith(".json")) {
-    const legacy = target.replace(/\.json$/, ".jsonc");
-    if (legacy !== target) {
-      try { fs.rmSync(legacy, { force: true }); } catch { /* ignore */ }
+  if (current !== undefined) {
+    try {
+      if (stringify(JSON.parse(current), 0, false) === stringify(value, 0, false)) return;
+    } catch {
+      // Invalid on-disk JSON is replaced by the validated in-memory value.
     }
+  }
+  const dir = path.dirname(safeTarget);
+  fs.mkdirSync(dir, { recursive: true });
+  safeTarget = assertContained(root, safeTarget);
+  const temporary = path.join(dir, `.${path.basename(safeTarget)}.${randomUUID()}.tmp`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(temporary, "wx", 0o600);
+    fs.writeFileSync(descriptor, content, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporary, assertContained(root, safeTarget));
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch { /* preserve the primary error */ }
+    }
+    try { fs.rmSync(temporary, { force: true }); } catch { /* preserve the primary error */ }
+    throw error;
   }
 }
 
-function providerRelativePath(provider: LappProvider): { providerPath: string; modelsPath: string | null } {
-  // `__dirName` is normally set by the loader from the directory basename
-  // and matches `provider.config.id`. If a caller writes a profile with an
-  // empty `__dirName` (e.g. hand-crafted JSON), fall back to `id` rather
-  // than the empty string — an empty basename would cause two distinct
-  // providers to clobber each other at `providers//provider.json`.
-  const dirName = provider.config.__dirName || provider.config.id;
-  return {
-    providerPath: path.join("providers", dirName, "provider.json"),
-    modelsPath:
-      provider.models && provider.models.models.length > 0
-        ? path.join("providers", dirName, "models.json")
-        : null,
-  };
+function profileFiles(profile: LappProfile, root: string): Map<string, unknown> {
+  const files = new Map<string, unknown>();
+  for (const provider of profile.providers) {
+    const dir = path.join(root, "providers", provider.config.id);
+    files.set(path.join(dir, "provider.json"), provider.config);
+    files.set(path.join(dir, "models.json"), provider.models);
+  }
+  if (profile.global) files.set(path.join(root, "global.json"), profile.global);
+  return files;
 }
 
-/**
- * Validate (if not skipped) and atomically write all profile files.
- * Throws on validation failure or write error; on write error only the temp
- * file for the failing file is removed (already-written files stay).
- *
- * If `options.before` is provided, files marked for `delete` in the plan
- * (removed providers' provider.json / models.json) are unlinked AFTER the
- * writes succeed. Deletes are best-effort: a failed unlink does not roll
- * back already-written files, but it also does not throw.
- */
+function removeFile(root: string, target: string): void {
+  const safeTarget = assertContained(root, target);
+  fs.rmSync(safeTarget, { force: true });
+  const dir = path.dirname(safeTarget);
+  if (path.basename(path.dirname(dir)) !== "providers") return;
+  if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+}
+
+interface FileSnapshot {
+  target: string;
+  content?: Buffer;
+}
+
+function snapshotFile(root: string, target: string): FileSnapshot {
+  const safeTarget = assertContained(root, target);
+  try {
+    return { target: safeTarget, content: fs.readFileSync(safeTarget) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { target: safeTarget };
+    throw error;
+  }
+}
+
+function restoreSnapshot(root: string, snapshot: FileSnapshot): void {
+  if (snapshot.content === undefined) {
+    removeFile(root, snapshot.target);
+    return;
+  }
+  let safeTarget = assertContained(root, snapshot.target);
+  const dir = path.dirname(safeTarget);
+  fs.mkdirSync(dir, { recursive: true });
+  safeTarget = assertContained(root, safeTarget);
+  const temporary = path.join(dir, `.${path.basename(safeTarget)}.${randomUUID()}.tmp`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(temporary, "wx", 0o600);
+    fs.writeFileSync(descriptor, snapshot.content);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporary, assertContained(root, safeTarget));
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch { /* preserve the rollback error */ }
+    }
+    try { fs.rmSync(temporary, { force: true }); } catch { /* preserve the rollback error */ }
+    throw error;
+  }
+}
+
 export async function writeProfileAtomic(
   profile: LappProfile,
   options: WriteOptions = {},
 ): Promise<void> {
-  if (!options.skipValidate) {
-    const result = validateProfile(profile);
-    if (!result.valid) {
-      const msgs = result.diagnostics
-        .filter((d) => d.level === "ERROR")
-        .map((d) => `${d.location ? `${d.location}: ` : ""}${d.message}`)
-        .join("\n");
-      throw new Error(`refusing to write invalid profile:\n${msgs}`);
-    }
-  }
-
+  const result = validateProfile(profile);
+  if (!result.valid) throw new ProfileValidationError(result.diagnostics, "refusing to write invalid profile");
+  const root = profileRoot(profile, options.path);
   const indent = options.indent ?? 2;
   const trailingNewline = options.trailingNewline ?? true;
-  const root = profile.rootDir;
-
-  // Provider files.
-  for (const provider of profile.providers) {
-    const { providerPath, modelsPath } = providerRelativePath(provider);
-    const configCopy = { ...provider.config };
-    // Strip internal fields from written JSON (also handled in stableStringify).
-    for (const key of Object.keys(configCopy)) {
-      if (key.startsWith("__")) delete (configCopy as Record<string, unknown>)[key];
+  const nextFiles = profileFiles(profile, root);
+  const beforeFiles = options.before ? profileFiles(options.before, root) : new Map<string, unknown>();
+  const touched = new Set([...nextFiles.keys(), ...beforeFiles.keys()]);
+  const snapshots = [...touched].map((target) => snapshotFile(root, target));
+  try {
+    for (const [target, value] of nextFiles) {
+      atomicWrite(root, target, value, stringify(value, indent, trailingNewline));
     }
-    atomicWriteFile(path.join(root, providerPath), stableStringify(configCopy, indent, trailingNewline));
-
-    if (modelsPath && provider.models) {
-      // Only re-stamp `updatedAt` when this `models.json` came from a
-      // sync flow (`applySyncedModels` tags it with the internal marker).
-      // For manage-driven edits we preserve whatever `updatedAt` (if any)
-      // the caller supplied, so a user-curated models.json keeps its
-      // original "last touched" timestamp instead of being silently
-      // rewritten on every write.
-      const internal = provider.models as { __lappUpdatedAtSource?: "sync" | "manual" };
-      const modelsCopy = internal.__lappUpdatedAtSource === "sync"
-        ? { ...provider.models, updatedAt: new Date().toISOString() }
-        : { ...provider.models };
-      // Strip the internal marker from the written copy regardless of
-      // source. `stableStringify` already drops `__`-prefixed fields, but
-      // we clear it explicitly here so the in-memory shape is consistent
-      // and the marker's lifecycle is owned by the manage layer, not the
-      // writer.
-      delete (modelsCopy as { __lappUpdatedAtSource?: unknown }).__lappUpdatedAtSource;
-      atomicWriteFile(path.join(root, modelsPath), stableStringify(modelsCopy, indent, trailingNewline));
+    for (const target of beforeFiles.keys()) {
+      if (!nextFiles.has(target)) removeFile(root, target);
     }
-  }
-
-  // global.json
-  if (profile.global) {
-    atomicWriteFile(path.join(root, "global.json"), stableStringify(profile.global, indent, trailingNewline));
-  }
-
-  // manifest.json
-  if (profile.manifest) {
-    atomicWriteFile(path.join(root, "manifest.json"), stableStringify(profile.manifest, indent, trailingNewline));
-  }
-
-  // Removes: only run after all writes succeed, so a write failure doesn't
-  // strand the on-disk state. Best-effort: a failed unlink is logged via the
-  // thrown error (rethrow as Error for visibility), but we still report the
-  // primary write success.
-  if (options.before) {
-    const plan = planChanges(options.before, profile);
-    for (const change of plan.changes) {
-      if (change.kind !== "delete") continue;
-      // Unlink both .json and any legacy .jsonc with the same base name.
-      const candidates = [change.path];
-      if (change.path.endsWith(".json")) {
-        candidates.push(change.path.replace(/\.json$/, ".jsonc"));
-      }
-      for (const p of candidates) {
-        try {
-          fs.rmSync(p, { force: true });
-        } catch {
-          /* best-effort: a write-failure here is acceptable */
-        }
-      }
-      // Remove the now-empty provider directory (best-effort).
-      const dir = path.dirname(change.path);
-      if (dir.includes(`${path.sep}providers${path.sep}`)) {
-        try {
-          const remaining = fs.readdirSync(dir);
-          if (remaining.length === 0) fs.rmdirSync(dir);
-        } catch {
-          /* ignore */
-        }
+  } catch (error) {
+    let rollbackFailed = false;
+    for (const snapshot of snapshots.reverse()) {
+      try {
+        restoreSnapshot(root, snapshot);
+      } catch {
+        rollbackFailed = true;
       }
     }
+    if (rollbackFailed) {
+      const failure = new Error("profile update failed and rollback could not restore the previous files");
+      failure.name = "ProfileWriteRollbackError";
+      throw failure;
+    }
+    throw error;
   }
 }

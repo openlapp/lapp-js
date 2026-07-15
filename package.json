@@ -1,6 +1,6 @@
 {
   "name": "lapp-js",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "TypeScript SDK and CLI workspace for LAPP (Local AI Provider Profiles).",
   "license": "MIT",
@@ -11,9 +11,12 @@
   "scripts": {
     "build": "pnpm -r --filter @openlapp/lapp --filter @openlapp/cli run build",
     "test": "vitest run",
+    "test:vault:system": "vitest run packages/lapp/test/system-vault.test.ts --pool=forks --minWorkers=1 --maxWorkers=1",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "lint": "pnpm -r run lint",
+    "lint": "pnpm --filter @openlapp/lapp run build && pnpm -r run lint",
+    "smoke:pack": "tsx scripts/pack-smoke.mts",
+    "verify:spec": "node scripts/verify-schema.mjs",
     "clean": "pnpm -r run clean",
     "verify:docs": "tsx scripts/verify-cli-docs.mts && tsx scripts/verify-protocols.mts"
   },

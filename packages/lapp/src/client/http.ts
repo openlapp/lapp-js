@@ -16,27 +16,35 @@ import type { AdapterContext } from "./adapter.js";
 const AUTH_HEADER_STRIP = new Set(["authorization", "x-api-key"]);
 
 export function buildAuthHeaders(ctx: AdapterContext): Record<string, string> {
+  const stripped = new Set(AUTH_HEADER_STRIP);
+  if (ctx.auth.type === "bearer") stripped.add("authorization");
+  if (ctx.auth.type === "header") stripped.add(ctx.auth.name.toLowerCase());
   const cleanRequestHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(ctx.requestHeaders ?? {})) {
-    if (AUTH_HEADER_STRIP.has(k.toLowerCase())) continue;
+    if (stripped.has(k.toLowerCase())) continue;
     cleanRequestHeaders[k] = v;
   }
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...cleanRequestHeaders,
   };
-  if (!ctx.secret) return headers;
-  const headerName = ctx.authHeader ?? "Authorization";
-  const authType = ctx.authType ?? "bearer";
-  if (authType === "bearer") {
-    headers[headerName] = `Bearer ${ctx.secret}`;
-  } else if (authType === "custom-header") {
-    headers[headerName] = ctx.secret;
-  } else {
-    // Unknown auth type — fall back to bearer to match the common case.
-    headers[headerName] = `Bearer ${ctx.secret}`;
+  if (ctx.auth.type === "bearer") {
+    headers.Authorization = `Bearer ${ctx.auth.secret}`;
+  } else if (ctx.auth.type === "header") {
+    headers[ctx.auth.name] = ctx.auth.secret;
   }
   return headers;
+}
+
+/** Apply query authentication after the adapter has chosen its final URL. */
+export function applyQueryAuth(
+  ctx: AdapterContext,
+  url: string,
+): string {
+  if (ctx.auth.type !== "query") return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set(ctx.auth.name, ctx.auth.secret);
+  return parsed.toString();
 }
 
 /** Like `buildAuthHeaders` but adds an extra fixed header (e.g. anthropic-version). */
@@ -44,5 +52,20 @@ export function buildAuthHeadersWith(
   ctx: AdapterContext,
   extra: Record<string, string>,
 ): Record<string, string> {
-  return { ...buildAuthHeaders(ctx), ...extra };
+  const headers = buildAuthHeaders(ctx);
+  for (const [name, value] of Object.entries(extra)) {
+    for (const existing of Object.keys(headers)) {
+      if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
+    }
+    headers[name] = value;
+  }
+  return headers;
+}
+
+/** Append a provider endpoint to the URL pathname without losing its query. */
+export function appendUrlPath(base: string, suffix: string): string {
+  const url = new URL(base);
+  const pathname = url.pathname.replace(/\/+$/, "");
+  url.pathname = `${pathname}/${suffix.replace(/^\/+/, "")}`;
+  return url.toString();
 }
