@@ -2,6 +2,7 @@
 packages/lapp/schema/*.schema.json text eol=lf
 packages/lapp/spec.en.md text eol=lf
 packages/lapp/spec.zh-CN.md text eol=lf
+packages/lapp/conformance/** text eol=lf
 packages/cli/spec.en.md text eol=lf
 packages/cli/spec.zh-CN.md text eol=lf
 spec-lock.json text eol=lf
