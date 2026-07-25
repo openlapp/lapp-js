@@ -26,6 +26,14 @@ function git(...args) {
   );
 }
 
+function gitBytes(...args) {
+  return execFileSync(
+    "git",
+    ["-c", `safe.directory=${canonicalSafeDirectory}`, "-C", canonicalRoot, ...args],
+    { maxBuffer: 16 * 1024 * 1024 },
+  );
+}
+
 function hash(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
@@ -41,9 +49,16 @@ function filesUnder(directory, prefix = "") {
   return files.sort();
 }
 
-function copyFile(source, destination) {
+function copyCanonicalFile(source, destination) {
+  const relative = path.relative(canonicalRoot, source);
+  if (!relative || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`)) {
+    throw new Error(`canonical path escapes its repository: ${source}`);
+  }
+  const bytes = status
+    ? fs.readFileSync(source)
+    : gitBytes("show", `${baseCommit}:${relative.split(path.sep).join("/")}`);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(source, destination);
+  fs.writeFileSync(destination, bytes);
 }
 
 function assertExactChild(parent, target) {
@@ -67,15 +82,15 @@ fs.mkdirSync(schemaDestination, { recursive: true });
 for (const existing of filesUnder(schemaDestination)) {
   if (!schemaFiles.includes(existing)) fs.rmSync(path.join(schemaDestination, existing));
 }
-for (const file of schemaFiles) copyFile(
+for (const file of schemaFiles) copyCanonicalFile(
   path.join(schemaSource, file),
   path.join(schemaDestination, file),
 );
 
 for (const file of documents) {
   const source = path.join(canonicalRoot, file);
-  copyFile(source, path.join(sdkRoot, file));
-  copyFile(source, path.join(cliRoot, file));
+  copyCanonicalFile(source, path.join(sdkRoot, file));
+  copyCanonicalFile(source, path.join(cliRoot, file));
 }
 
 assertExactChild(sdkRoot, conformanceRoot);
@@ -106,7 +121,7 @@ for (const tree of trees) {
       : sourceRelative;
     const source = path.join(tree.source, ...sourceRelative.split("/"));
     const destination = path.join(conformanceRoot, ...destinationRelative.split("/"));
-    copyFile(source, destination);
+    copyCanonicalFile(source, destination);
     conformanceSources.set(destinationRelative, source);
   }
 }

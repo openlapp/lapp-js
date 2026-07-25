@@ -22,6 +22,14 @@ function git(...args) {
   );
 }
 
+function gitBytes(...args) {
+  return execFileSync(
+    "git",
+    ["-c", `safe.directory=${canonicalSafeDirectory}`, "-C", canonicalRoot, ...args],
+    { maxBuffer: 16 * 1024 * 1024 },
+  );
+}
+
 function fail(message) {
   console.error(message);
   process.exit(1);
@@ -67,6 +75,16 @@ function canonicalConformanceSource(relative) {
     "conformance",
     ...relative.split("/"),
   );
+}
+
+function canonicalBytes(absolute) {
+  if (snapshot.kind !== "commit") return fs.readFileSync(absolute);
+  const relative = path.relative(canonicalRoot, absolute);
+  if (!relative || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`)) {
+    fail(`canonical path escapes its repository: ${absolute}`);
+  }
+  const gitPath = relative.split(path.sep).join("/");
+  return gitBytes("show", `${expectedCommit}:${gitPath}`);
 }
 
 if (lock.version !== 2) fail("spec-lock.json must use snapshot format version 2");
@@ -115,19 +133,19 @@ if (fs.existsSync(path.join(canonicalRoot, ".git"))) {
     .filter((name) => name.endsWith(".schema.json"));
   sameSet(canonicalSchemas, schemaFiles, "canonical schema");
   for (const file of schemaFiles) {
-    if (!fs.readFileSync(path.join(canonicalRoot, "schema", file))
+    if (!canonicalBytes(path.join(canonicalRoot, "schema", file))
       .equals(fs.readFileSync(path.join(schemaRoot, file)))) {
       fail(`canonical schema drift: ${file}`);
     }
   }
   for (const file of documentFiles) {
-    if (!fs.readFileSync(path.join(canonicalRoot, file))
+    if (!canonicalBytes(path.join(canonicalRoot, file))
       .equals(fs.readFileSync(path.join(sdkRoot, file)))) {
       fail(`canonical document drift: ${file}`);
     }
   }
   for (const file of conformanceFiles) {
-    if (!fs.readFileSync(canonicalConformanceSource(file))
+    if (!canonicalBytes(canonicalConformanceSource(file))
       .equals(fs.readFileSync(path.join(conformanceRoot, ...file.split("/"))))) {
       fail(`canonical conformance drift: ${file}`);
     }
