@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0",
+  "id": "demo",
+  "providerType": "Reference",
+  "baseUrl": "https://example.com/v1",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "none" }
+}

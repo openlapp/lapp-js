@@ -1,18 +1,20 @@
 # lapp-js
 
-**LAPP**（Local AI Provider Profiles，本地 AI Provider Profile）的 TypeScript
-SDK 与 CLI。LAPP 是本地 Provider Registry：应用发现模型和连接信息后，直接与
-上游 Provider 通信。
+**LAPP**（Local AI Provider Profiles，本地 AI Provider Profile）的官方
+TypeScript SDK 与 CLI。LAPP 是开放的本地 Provider Profile 协议：应用发现模型
+和连接信息后，直接与上游 Provider 通信。
 
 > **语言：** [English](README.md) | [中文](README_zh.md)
 
 ```text
-直接实现：应用 -> 读取 ~/.lapp -> 上游 API
-SDK：    应用 -> @openlapp/lapp -> 上游 API
-CLI：   应用 -> lapp JSON 输出 -> 上游 API
+推荐：应用 -> @openlapp/lapp -> 上游 API
+直连：应用 -> 读取 ~/.lapp -> 上游 API
+CLI： 应用 -> lapp JSON 输出 -> 上游 API
 ```
 
-应用始终直接与上游 Provider 通信，不需要后台服务或请求路由组件。
+应用始终直接与上游 Provider 通信；不存在 daemon、gateway、proxy 或请求路由
+服务。官方集成建议使用 SDK，使应用无需自行处理凭据存储细节；直接实现协议和
+调用 CLI 仍然是符合规范的开放接入路径。
 
 | 包 | 用途 |
 |----|------|
@@ -20,6 +22,9 @@ CLI：   应用 -> lapp JSON 输出 -> 上游 API
 | [`@openlapp/cli`](docs/zh/cli.md) | 提供稳定 JSON 输出的轻量命令行包装。 |
 
 ## 安装
+
+> 当前包只发布到本机 beta Registry。下面的 npmjs 命令从首次公开 `1.0.0`
+> 开始生效；贡献者请使用[本机 beta Registry](dev/registry/README.md)。
 
 ```bash
 npm install @openlapp/lapp
@@ -99,6 +104,20 @@ console.log(models.length, connection.modelId, response.text);
 `vault://provider/credential`，返回选中的协议、canonical 模型 ID、地址、请求头
 和认证信息。Client 会在每次直连请求前重新解析，因此轮换 Vault 后无需重建。
 
+## Manager 状态
+
+目前还没有稳定、受支持的 GUI 正式版。独立的
+[`openlapp/lapp-manager`](https://github.com/openlapp/lapp-manager) 仓库已经包含
+基于 Tauri 2、Vue 3、TypeScript 与 Naive UI 的 Alpha 实现，并在进程内链接公开的
+Rust SDK；不会引入 sidecar、daemon、gateway 或 proxy。当前源码和测试可以证明实现
+状态，但签名并完成安装验证的安装包以及稳定 UI 合同仍属于发布工作。
+
+原 `@openlapp/react` 和 `@openlapp/vue` 包继续保持移除。可复用的产品、安全、
+无障碍和行为合同由 Manager 文档维护，不再恢复为公开的框架包。
+
+[Electron bridge 示例](examples/electron-manager/README.md)是当前 Node
+Manager Host 的非受支持集成参考；它不是完整 GUI，也不是独立 Manager 的实现基础。
+
 ## 支持的协议
 
 | 连接协议 | 直连聊天客户端 | 模型发现 |
@@ -116,6 +135,8 @@ Profile 可以保存由应用自行实现的其他协议 ID。SDK 内置聊天�
 - **[入门指南](docs/zh/getting-started.md)**——三种接入方式
 - **[CLI 参考](docs/zh/cli.md)**——命令、JSON 输出和退出码
 - **[SDK 指南](docs/zh/sdk.md)**——发现、解析、刷新与直连调用
+- **[Manager](https://github.com/openlapp/lapp-manager)**——独立的 Tauri/Vue/Naive UI Alpha 源码与合同
+- **[本机 beta Registry](dev/registry/README.md)**——私有 Verdaccio 发布与全新安装验证
 - [配置文档](docs/zh/configuration.md)——v1 JSON Profile 合同
 - [安全说明](docs/zh/security.md)——信任边界和凭据处理
 - [协议说明](docs/zh/protocols.md)——协议选择和模型发现
@@ -131,6 +152,10 @@ Profile 可以保存由应用自行实现的其他协议 ID。SDK 内置聊天�
   默认把新凭据写入当前用户的系统 Vault；创建明文必须显式 opt-in。
 - 远端模型刷新是显式、非破坏性的操作，不是后台缓存。
 - 同一 OS 用户下的可信进程显式解析连接后，LAPP 不再阻止该进程使用凭据。
+- 官方 Profile + Vault 变更共享一个当前用户全局写锁；正常 writer 永远不会按
+  年龄、PID 或 heartbeat 偷锁。
+- SDK 默认从成功响应中脱敏已解析凭据；只有显式
+  `redactSuccessfulSecrets: false` 才保留原文，错误和诊断始终脱敏。
 
 ## 许可证
 

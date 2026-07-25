@@ -3,10 +3,12 @@
 LAPP lets AI applications share one local provider and model registry. The
 application still sends requests directly to the selected upstream API.
 
-Choose the smallest integration that fits your application:
+The official SDK is recommended for application integrations so applications
+do not have to reproduce credential and concurrency rules. Direct protocol
+implementations and the CLI remain open, conforming paths:
 
-1. Read the JSON profile and implement the LAPP rules yourself.
-2. Use `@openlapp/lapp` from TypeScript.
+1. Use `@openlapp/lapp` from TypeScript.
+2. Read the JSON profile and implement the LAPP rules yourself.
 3. Invoke `lapp` and consume its stable JSON output.
 
 ## Install

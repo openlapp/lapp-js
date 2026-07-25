@@ -4,4 +4,5 @@ dist/
 .vitest-cache/
 coverage/
 .npm-cache/
+dev/registry/.npmrc.local
 .learnings

@@ -1,105 +1,141 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalRoot = path.resolve(root, "..", "lapp");
-const canonical = path.join(canonicalRoot, "schema");
-const vendored = path.resolve(root, "packages", "lapp", "schema");
-const packageRoots = [
-  path.resolve(root, "packages", "lapp"),
-  path.resolve(root, "packages", "cli"),
-];
-const lock = JSON.parse(fs.readFileSync(path.resolve(root, "spec-lock.json"), "utf8"));
-if (!/^[0-9a-f]{40}$/.test(lock.canonicalCommit ?? "")) {
-  console.error("spec-lock.json must contain a full canonicalCommit SHA");
+const sdkRoot = path.join(root, "packages", "lapp");
+const cliRoot = path.join(root, "packages", "cli");
+const schemaRoot = path.join(sdkRoot, "schema");
+const conformanceRoot = path.join(sdkRoot, "conformance");
+const lock = JSON.parse(fs.readFileSync(path.join(root, "spec-lock.json"), "utf8"));
+const canonicalSafeDirectory = canonicalRoot.replaceAll("\\", "/");
+
+function git(...args) {
+  return execFileSync(
+    "git",
+    ["-c", `safe.directory=${canonicalSafeDirectory}`, "-C", canonicalRoot, ...args],
+    { encoding: "utf8" },
+  );
+}
+
+function fail(message) {
+  console.error(message);
   process.exit(1);
 }
 
-const schemaFiles = (directory) => fs.readdirSync(directory)
-  .filter((name) => name.endsWith(".schema.json"))
-  .sort();
-const vendoredFiles = schemaFiles(vendored);
-const lockedFiles = Object.keys(lock.schemas).sort();
-if (JSON.stringify(lockedFiles) !== JSON.stringify(vendoredFiles)) {
-  console.error(`schema file set drift\nlocked: ${lockedFiles.join(", ")}\nvendored: ${vendoredFiles.join(", ")}`);
-  process.exit(1);
+function hash(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
-for (const file of vendoredFiles) {
-  const copy = fs.readFileSync(path.join(vendored, file));
-  const digest = crypto.createHash("sha256").update(copy).digest("hex");
-  if (digest !== lock.schemas[file]) {
-    console.error(`schema lock drift: ${file}`);
-    process.exit(1);
+function filesUnder(directory, prefix = "") {
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...filesUnder(absolute, relative));
+    else if (entry.isFile()) files.push(relative);
+  }
+  return files.sort();
+}
+
+function sameSet(actual, expected, label) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    fail(`${label} file set drift\nlocked: ${expected.join(", ")}\nactual: ${actual.join(", ")}`);
+  }
+}
+
+function canonicalConformanceSource(relative) {
+  const mappings = [
+    ["profiles/valid/", ["tools", "validator", "fixtures", "valid"]],
+    ["profiles/invalid/", ["tools", "validator", "fixtures", "invalid"]],
+    ["profiles/examples/", ["examples"]],
+  ];
+  for (const [prefix, parts] of mappings) {
+    if (relative.startsWith(prefix)) {
+      return path.join(canonicalRoot, ...parts, ...relative.slice(prefix.length).split("/"));
+    }
+  }
+  return path.join(
+    canonicalRoot,
+    "tools",
+    "validator",
+    "fixtures",
+    "conformance",
+    ...relative.split("/"),
+  );
+}
+
+if (lock.version !== 2) fail("spec-lock.json must use snapshot format version 2");
+const snapshot = lock.canonicalSnapshot;
+const expectedCommit = snapshot?.kind === "commit" ? snapshot.commit : snapshot?.baseCommit;
+if (!/^[0-9a-f]{40}$/.test(expectedCommit ?? "")) {
+  fail("spec-lock.json must contain a full canonical snapshot commit SHA");
+}
+if (snapshot.kind === "working-tree" && !/^\d{4}-\d{2}-\d{2}$/.test(snapshot.capturedDate ?? "")) {
+  fail("working-tree canonical snapshots require capturedDate");
+}
+if (!['commit', 'working-tree'].includes(snapshot.kind)) fail("unknown canonical snapshot kind");
+
+const schemaFiles = filesUnder(schemaRoot).filter((name) => name.endsWith(".schema.json"));
+const lockedSchemas = Object.keys(lock.schemas ?? {}).sort();
+sameSet(schemaFiles, lockedSchemas, "schema");
+for (const file of schemaFiles) {
+  if (hash(fs.readFileSync(path.join(schemaRoot, file))) !== lock.schemas[file]) {
+    fail(`schema lock drift: ${file}`);
   }
 }
 
 const documentFiles = Object.keys(lock.documents ?? {}).sort();
 for (const file of documentFiles) {
-  const reference = fs.readFileSync(path.join(packageRoots[0], file));
-  const digest = crypto.createHash("sha256").update(reference).digest("hex");
-  if (digest !== lock.documents[file]) {
-    console.error(`document lock drift: ${file}`);
-    process.exit(1);
-  }
-  for (const packageRoot of packageRoots.slice(1)) {
-    if (!reference.equals(fs.readFileSync(path.join(packageRoot, file)))) {
-      console.error(`package document drift: ${file}`);
-      process.exit(1);
-    }
+  const sdk = fs.readFileSync(path.join(sdkRoot, file));
+  if (hash(sdk) !== lock.documents[file]) fail(`document lock drift: ${file}`);
+  const cli = fs.readFileSync(path.join(cliRoot, file));
+  if (!sdk.equals(cli)) fail(`package document drift: ${file}`);
+}
+
+const conformanceFiles = filesUnder(conformanceRoot);
+const lockedConformance = Object.keys(lock.conformance ?? {}).sort();
+sameSet(conformanceFiles, lockedConformance, "conformance");
+for (const file of conformanceFiles) {
+  if (hash(fs.readFileSync(path.join(conformanceRoot, ...file.split("/")))) !== lock.conformance[file]) {
+    fail(`conformance lock drift: ${file}`);
   }
 }
 
-if (fs.existsSync(canonical)) {
-  let actualCommit;
-  try {
-    actualCommit = execFileSync("git", [
-      "-c",
-      `safe.directory=${canonicalRoot.replaceAll("\\", "/")}`,
-      "-C",
-      canonicalRoot,
-      "rev-parse",
-      "HEAD",
-    ], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  } catch {
-    console.error(`canonical checkout is not a Git repository: ${canonicalRoot}`);
-    process.exit(1);
+if (fs.existsSync(path.join(canonicalRoot, ".git"))) {
+  const actualCommit = git("rev-parse", "HEAD").trim();
+  if (actualCommit !== expectedCommit) {
+    fail(`canonical base drift\nlocked: ${expectedCommit}\nactual: ${actualCommit}`);
   }
-  if (actualCommit !== lock.canonicalCommit) {
-    console.error(`canonical commit drift\nlocked: ${lock.canonicalCommit}\nactual: ${actualCommit}`);
-    process.exit(1);
-  }
-  const canonicalFiles = schemaFiles(canonical);
-  if (JSON.stringify(canonicalFiles) !== JSON.stringify(vendoredFiles)) {
-    console.error(`canonical schema file set drift\ncanonical: ${canonicalFiles.join(", ")}\nvendored: ${vendoredFiles.join(", ")}`);
-    process.exit(1);
-  }
-  for (const file of canonicalFiles) {
-    const source = fs.readFileSync(path.join(canonical, file));
-    const copy = fs.readFileSync(path.join(vendored, file));
-    if (!source.equals(copy)) {
-      console.error(`canonical schema drift: ${file}`);
-      process.exit(1);
+  const canonicalSchemas = filesUnder(path.join(canonicalRoot, "schema"))
+    .filter((name) => name.endsWith(".schema.json"));
+  sameSet(canonicalSchemas, schemaFiles, "canonical schema");
+  for (const file of schemaFiles) {
+    if (!fs.readFileSync(path.join(canonicalRoot, "schema", file))
+      .equals(fs.readFileSync(path.join(schemaRoot, file)))) {
+      fail(`canonical schema drift: ${file}`);
     }
   }
   for (const file of documentFiles) {
-    const source = fs.readFileSync(path.join(canonicalRoot, file));
-    const copy = fs.readFileSync(path.join(packageRoots[0], file));
-    if (!source.equals(copy)) {
-      console.error(`canonical document drift: ${file}`);
-      process.exit(1);
+    if (!fs.readFileSync(path.join(canonicalRoot, file))
+      .equals(fs.readFileSync(path.join(sdkRoot, file)))) {
+      fail(`canonical document drift: ${file}`);
+    }
+  }
+  for (const file of conformanceFiles) {
+    if (!fs.readFileSync(canonicalConformanceSource(file))
+      .equals(fs.readFileSync(path.join(conformanceRoot, ...file.split("/"))))) {
+      fail(`canonical conformance drift: ${file}`);
     }
   }
 }
 
 console.log(
-  `schemas and documents match canonical LAPP ${lock.canonicalCommit}: `
-  + `${vendoredFiles.length} schemas, ${documentFiles.length} documents`,
+  `canonical LAPP ${snapshot.kind} snapshot ${expectedCommit} verified: `
+  + `${schemaFiles.length} schemas, ${documentFiles.length} documents, `
+  + `${conformanceFiles.length} conformance files`,
 );

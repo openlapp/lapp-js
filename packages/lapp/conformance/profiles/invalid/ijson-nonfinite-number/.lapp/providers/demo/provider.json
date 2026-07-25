@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0",
+  "id": "demo",
+  "baseUrl": "https://api.example.com",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "none" },
+  "extensions": { "example.invalid/overflow": 1e400 }
+}

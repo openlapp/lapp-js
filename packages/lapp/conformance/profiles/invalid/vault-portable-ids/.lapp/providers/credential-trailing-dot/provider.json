@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "credential-trailing-dot",
+  "baseUrl": "https://credential-trailing-dot.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault://credential-trailing-dot/default." }
+}

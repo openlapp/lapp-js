@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "keychain",
+  "baseUrl": "https://keychain.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "keychain://service/account" }
+}

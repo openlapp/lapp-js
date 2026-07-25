@@ -11,6 +11,7 @@
       "$ref": "#/$defs/portableId"
     },
     "name": { "type": "string", "minLength": 1 },
+    "providerType": { "$ref": "#/$defs/providerTypeId" },
     "enabled": { "type": "boolean" },
     "baseUrl": { "type": "string", "minLength": 1 },
     "protocols": {
@@ -53,6 +54,10 @@
     "protocolId": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "providerTypeId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
     },
     "secret": {
       "type": "string",

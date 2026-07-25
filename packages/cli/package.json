@@ -1,6 +1,6 @@
 {
   "name": "@openlapp/cli",
-  "version": "1.0.0",
+  "version": "0.1.2",
   "description": "CLI for LAPP v1 (Local AI Provider Profiles). Thin wrapper over @openlapp/lapp.",
   "license": "MIT",
   "type": "module",
@@ -27,6 +27,7 @@
   },
   "keywords": ["lapp", "ai", "llm", "provider", "profile", "cli"],
   "publishConfig": {
+    "registry": "http://127.0.0.1:4873/",
     "access": "public"
   },
   "scripts": {

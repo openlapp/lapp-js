@@ -1,0 +1,160 @@
+{
+  "fixtureVersion": "1.0",
+  "protocol": "openai-responses",
+  "context": {
+    "providerId": "fixture-provider",
+    "baseUrl": "https://api.example.test/v1?tenant=fixture",
+    "model": "fixture-model",
+    "auth": { "type": "none" },
+    "requestHeaders": { "X-Fixture-Trace": "trace-1" }
+  },
+  "request": {
+    "input": {
+      "messages": [
+        { "role": "system", "content": "Be concise." },
+        { "role": "user", "content": "Say hello." }
+      ],
+      "temperature": 0.25,
+      "maxTokens": 128,
+      "stream": true
+    },
+    "expected": {
+      "url": "https://api.example.test/v1/responses?tenant=fixture",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "X-Fixture-Trace": "trace-1"
+      },
+      "body": {
+        "model": "fixture-model",
+        "input": [
+          { "role": "user", "content": "Say hello." }
+        ],
+        "instructions": "Be concise.",
+        "temperature": 0.25,
+        "max_output_tokens": 128,
+        "stream": true
+      },
+      "stream": true
+    }
+  },
+  "nonStream": {
+    "upstream": {
+      "model": "fixture-returned-model",
+      "status": "completed",
+      "output": [
+        {
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            { "type": "output_text", "text": "Hello!" }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 3,
+        "total_tokens": 10
+      }
+    },
+    "expected": {
+      "text": "Hello!",
+      "provider": "fixture-provider",
+      "model": "fixture-returned-model",
+      "protocol": "openai-responses",
+      "finishReason": "completed",
+      "usage": {
+        "inputTokens": 7,
+        "outputTokens": 3,
+        "totalTokens": 10
+      }
+    }
+  },
+  "sse": {
+    "wire": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n",
+    "expectedEvents": [
+      { "kind": "delta", "text": "Hel" },
+      { "kind": "delta", "text": "lo" },
+      { "kind": "usage", "inputTokens": 7, "outputTokens": 3, "totalTokens": 10 },
+      { "kind": "finish", "reason": "completed" }
+    ]
+  },
+  "tools": {
+    "input": {
+      "messages": [
+        { "role": "system", "content": "Use tools when useful." },
+        {
+          "role": "assistant",
+          "content": "Checking.",
+          "toolCalls": [
+            { "id": "call_weather", "name": "get_weather", "arguments": "{\"city\":\"Shanghai\"}" }
+          ]
+        },
+        { "role": "tool", "toolCallId": "call_weather", "content": "sunny" },
+        { "role": "user", "content": "What should I wear?" }
+      ],
+      "tools": [
+        {
+          "name": "get_weather",
+          "description": "Get current weather.",
+          "parameters": {
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"]
+          }
+        }
+      ],
+      "toolChoice": "auto"
+    },
+    "expectedBody": {
+      "model": "fixture-model",
+      "input": [
+        { "role": "assistant", "content": "Checking." },
+        {
+          "type": "function_call",
+          "call_id": "call_weather",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"Shanghai\"}"
+        },
+        { "type": "function_call_output", "call_id": "call_weather", "output": "sunny" },
+        { "role": "user", "content": "What should I wear?" }
+      ],
+      "instructions": "Use tools when useful.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "get_weather",
+          "description": "Get current weather.",
+          "parameters": {
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"]
+          }
+        }
+      ],
+      "tool_choice": "auto"
+    },
+    "upstream": {
+      "model": "fixture-returned-model",
+      "status": "completed",
+      "output": [
+        {
+          "type": "function_call",
+          "call_id": "call_weather",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"Shanghai\"}"
+        }
+      ]
+    },
+    "expected": {
+      "text": "",
+      "provider": "fixture-provider",
+      "model": "fixture-returned-model",
+      "protocol": "openai-responses",
+      "finishReason": "completed",
+      "toolCalls": [
+        { "id": "call_weather", "name": "get_weather", "arguments": { "city": "Shanghai" } }
+      ]
+    }
+  }
+}

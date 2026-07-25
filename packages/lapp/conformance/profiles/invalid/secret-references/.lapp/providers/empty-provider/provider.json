@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "empty-provider",
+  "baseUrl": "https://empty-provider.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault:///default" }
+}

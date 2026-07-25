@@ -1,17 +1,43 @@
 # Changelog
 
-All notable changes to `@openlapp/lapp` and `@openlapp/cli` are documented in
-this file.
+All notable changes to `@openlapp/lapp` and `@openlapp/cli` are documented
+in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0] - 2026-07-15
-
-This is the first public v1 release. Because earlier drafts were never
-released, the repository adopts the final v1 contract directly and carries no
-compatibility or migration layer for them.
+## [0.1.2] - 2026-07-25
 
 ### Added
+
+- Direct image-generation and speech-synthesis clients, normalized generation
+  results, bounded artifact downloads, and shared media conformance fixtures.
+
+### Changed
+
+- Canonical schemas, documents, and conformance fixtures are pinned to an
+  immutable LAPP commit instead of a working-tree snapshot.
+- Manager snapshots include Vault-only mutations in their opaque revision, so
+  stale credential rotations fail with `PROFILE_CONFLICT`.
+
+## [0.1.1] - 2026-07-20
+
+The workspace currently uses internal `0.x` package versions published only to
+the machine-local beta Registry. No npmjs package or GitHub Release exists yet;
+a future public package release will use a fresh `1.x` version and matching Git
+tag. The protocol itself is already LAPP v1 and continues to use
+`schemaVersion: "1.0"`.
+
+### Added
+
+- A browser-safe manager contract and Node-owned manager host with sanitized
+  snapshots, semantic compare-and-swap transactions, a current-user global
+  writer lock shared across every Profile root,
+  and Vault rollback when a Profile commit fails.
+- The former React/Vue renderer packages were removed after their UX, security,
+  accessibility, and behavior contracts moved to the future Tauri manager's
+  design repository.
+- The Electron integration example is an unsupported Node-host embedding
+  reference, not a complete GUI or the basis of the standalone Manager.
 
 - Standard-JSON LAPP Profile support with `global.json`, plus one
   `provider.json` and authoritative `models.json` for every Provider.
@@ -26,7 +52,7 @@ compatibility or migration layer for them.
   refresh, connection resolution, direct ping/chat, presets, and stable
   versioned JSON output.
 - A bilingual user agreement and risk disclosure template distributed with
-  both npm packages and verified by the package smoke test.
+  both public packages and verified by the package smoke test.
 - Device-local shared Vault credentials through the current user's native
   credential store, with strict provider/origin/auth binding, asynchronous
   resolution, rotation-aware direct clients, and typed credential errors.
@@ -36,6 +62,9 @@ compatibility or migration layer for them.
 
 ### Changed
 
+- Release and pack verification cover the SDK and CLI, including ESM/CJS
+  consumers and checks that neither tarball restores removed renderer/UI
+  artifacts.
 - `models.json` is local authoritative data. Remote refresh is explicit, returns
   an in-memory result, appends only unknown IDs, may fill missing display names,
   and never removes or overwrites existing models.
@@ -49,9 +78,10 @@ compatibility or migration layer for them.
 - Credentials resolve only for the selected connection and remain hidden from
   inspection and every CLI output. Direct clients resolve again before each
   request rather than caching plaintext credentials.
-- Release automation now starts only from pushed `v*` tags, requires the tag to
-  match both committed package versions, runs all quality gates, publishes
-  prereleases under `next`, and verifies installed packed tarballs before publish.
+- Internal `0.x` packages publish only to the machine-local Registry without a
+  Git tag or GitHub Release. Public release automation is reserved for
+  `1.0.0+`, requires the tag to match all three workspace manifests, runs every
+  quality gate, and verifies installed packed tarballs before npmjs publish.
 
 ### Removed
 

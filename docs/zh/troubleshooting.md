@@ -30,8 +30,9 @@ lapp inspect
 ## Schema 快照错误
 
 如果 SDK 报告 LAPP Schema 缺失或未注册，请检查受版本控制的快照是否仍在
-`packages/lapp/schema/`；若被删除，请从版本控制恢复。`pnpm verify:spec` 会将该
-快照与固定的 canonical spec commit 比对。
+`packages/lapp/schema/`；若被删除，请从版本控制恢复。`pnpm verify:spec` 会把
+schema、文档与 conformance 数据和 `spec-lock.json` 中记录的 commit 或明确标注的
+working-tree snapshot 比对。working-tree snapshot 只用于开发，不能作为发布来源。
 
 ## Profile 无法加载
 

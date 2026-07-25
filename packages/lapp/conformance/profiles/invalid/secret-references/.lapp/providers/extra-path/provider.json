@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "extra-path",
+  "baseUrl": "https://extra-path.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault://extra-path/default/extra" }
+}

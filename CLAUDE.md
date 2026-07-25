@@ -53,6 +53,9 @@ summary is [`docs/internal/CLAUDE.md`](docs/internal/CLAUDE.md).
 
 Run `pnpm build`, `pnpm lint`, `pnpm test`, `pnpm verify:docs`,
 `pnpm verify:spec`, and `pnpm smoke:pack` before release work. Releases start
-only when a `v*` tag is pushed; both committed package versions must already
-match that tag. Both packages must contain identical English and Chinese user
-agreements. Preserve unrelated dirty-worktree changes.
+only when a `v*` tag is pushed; all three committed workspace manifest versions must
+already match that tag. Internal `0.x` builds go only to the loopback Verdaccio
+Registry through `registry:*` scripts and never use tags or GitHub Releases.
+Public releases begin at `1.0.0`. Both public packages must contain the
+expected English and Chinese user agreements. Preserve unrelated dirty-worktree
+changes.

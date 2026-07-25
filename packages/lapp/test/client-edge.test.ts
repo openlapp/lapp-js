@@ -184,7 +184,7 @@ describe("client request boundary", () => {
     expect(JSON.stringify(streamError.raw)).not.toContain(credential);
   });
 
-  it("preserves successful provider-native data even when it equals the credential", async () => {
+  it("preserves successful provider-native data only after explicit redaction opt-out", async () => {
     const credential = "opaque-success-credential!";
     const client = createLappClient({
       profile: profile("openai-chat-completions", {
@@ -192,6 +192,7 @@ describe("client request boundary", () => {
         name: "X-Credential",
         secret: credential,
       }),
+      redactSuccessfulSecrets: false,
       fetchImpl: async () => response({ choices: [{ message: { content: credential } }] }),
     });
 

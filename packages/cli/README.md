@@ -1,5 +1,9 @@
 # @openlapp/cli
 
+> `0.x` builds are internal betas served only by the loopback OpenLAPP
+> Registry. Configure the local `@openlapp` scope before using the install
+> command below. Public npmjs installation starts with `1.0.0`.
+
 Thin command-line wrapper for `@openlapp/lapp`. It reads a local LAPP profile,
 lists and refreshes models, resolves connection credentials, and can call the
 upstream provider directly. It runs no background service.
@@ -33,6 +37,8 @@ lapp resolve [--path <path>] (--provider <id> --model <id> | --default <task>) [
 lapp presets [--json]
 lapp ping [--path <path>] [--provider <id> --model <id> | --default <task>] [--json]
 lapp chat [message...] [--path <path>] [--provider <id> --model <id> | --default <task>] [--system <prompt>] [--stream | --json]
+lapp lock inspect [--json]
+lapp lock repair --token <observed-token> --yes [--json]
 lapp help
 lapp version
 ```
@@ -68,13 +74,20 @@ go to stderr as `{"version":1,"error":...}`. `resolve` reports only the
 credential scheme, availability, and Vault binding state; there is no get or
 export command. JSON mode never prompts for credential input.
 
+All mutations share the current-user global writer lock. `lock inspect` is
+read-only; `lock repair` requires the exact observed owner token and `--yes`.
+It never steals a lock based on age, PID, or heartbeat, and refuses malformed
+or tokenless owner records.
+
 See the full [CLI reference](https://github.com/openlapp/lapp-js/blob/main/docs/cli.md).
 The installed package also includes the [English user agreement](./USER_AGREEMENT.en.md)
 and [中文用户协议](./USER_AGREEMENT.zh-CN.md). Package installation distributes
 the files but does not itself record affirmative acceptance.
 
-The release-locked [English protocol](./spec.en.md) and
-[中文协议](./spec.zh-CN.md) are distributed byte-for-byte with the CLI.
+The snapshot-locked [English protocol](./spec.en.md) and
+[中文协议](./spec.zh-CN.md) are distributed byte-for-byte with the CLI. The
+snapshot may be a canonical commit or an explicitly labelled development
+working tree; only an immutable canonical commit is valid release provenance.
 
 ## License
 

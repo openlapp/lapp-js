@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0",
+  "id": "siliconflow",
+  "name": "SiliconFlow",
+  "enabled": true,
+  "baseUrl": "https://api.siliconflow.cn/v1",
+  "protocols": ["openai-chat-completions"],
+  "auth": {
+    "type": "bearer",
+    "secret": "env://SILICONFLOW_API_KEY"
+  },
+  "modelDiscovery": {
+    "protocol": "openai-models",
+    "url": "https://api.siliconflow.cn/v1/models"
+  }
+}

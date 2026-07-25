@@ -1,7 +1,8 @@
 import path from "node:path";
-import type { LappProfile } from "./types.js";
+import type { LappProfile, LappProvider } from "./types.js";
 
 const profileRoots = new WeakMap<LappProfile, string>();
+const providerDirectories = new WeakMap<LappProvider, string>();
 
 export function attachProfileRoot(profile: LappProfile, root: string): LappProfile {
   profileRoots.set(profile, path.resolve(root));
@@ -20,4 +21,14 @@ export function profileRoot(profile: LappProfile, explicit?: string): string {
     throw new Error("profile has no associated path; pass a path when creating or writing it");
   }
   return root;
+}
+
+/** Preserve the actual source directory for canonical diagnostics. */
+export function attachProviderDirectory(provider: LappProvider, directory: string): LappProvider {
+  providerDirectories.set(provider, directory);
+  return provider;
+}
+
+export function providerDirectory(provider: LappProvider): string {
+  return providerDirectories.get(provider) ?? provider.config.id;
 }

@@ -28,6 +28,9 @@ function descriptor(provider: LappProvider, model: ModelEntry): ModelDescriptor 
   return {
     providerId: provider.config.id,
     ...(provider.config.name !== undefined ? { providerName: provider.config.name } : {}),
+    ...(provider.config.providerType !== undefined
+      ? { providerType: provider.config.providerType }
+      : {}),
     providerEnabled: provider.config.enabled !== false,
     modelId: model.id,
     ...(model.name !== undefined ? { modelName: model.name } : {}),

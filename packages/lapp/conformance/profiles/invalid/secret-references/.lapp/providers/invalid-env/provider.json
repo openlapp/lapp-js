@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "invalid-env",
+  "baseUrl": "https://invalid-env.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "env://1INVALID" }
+}

@@ -1,0 +1,65 @@
+{
+  "fixtureVersion": "1.0",
+  "protocol": "openai-audio-speech",
+  "context": {
+    "providerId": "fixture-provider",
+    "baseUrl": "https://api.example.test/v1?tenant=fixture",
+    "model": "fixture-speech-model",
+    "auth": { "type": "none" },
+    "requestHeaders": { "X-Fixture-Trace": "trace-speech" }
+  },
+  "request": {
+    "input": {
+      "operation": "text-to-speech",
+      "text": "Hello from the speech fixture.",
+      "voice": "alloy",
+      "outputFormat": "mp3",
+      "speed": 1
+    },
+    "expected": {
+      "url": "https://api.example.test/v1/audio/speech?tenant=fixture",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "X-Fixture-Trace": "trace-speech"
+      },
+      "body": {
+        "model": "fixture-speech-model",
+        "input": "Hello from the speech fixture.",
+        "voice": "alloy",
+        "response_format": "mp3",
+        "speed": 1
+      }
+    }
+  },
+  "response": {
+    "upstream": {
+      "headers": { "content-type": "audio/mpeg" },
+      "bodyBase64": "SUQzBAAAAAAA"
+    },
+    "expected": {
+      "status": "succeeded",
+      "target": {
+        "provider": "fixture-provider",
+        "model": "fixture-speech-model",
+        "protocol": "openai-audio-speech",
+        "operation": "text-to-speech"
+      },
+      "output": {
+        "parts": [
+          {
+            "type": "artifact",
+            "artifact": {
+              "kind": "audio",
+              "mediaType": "audio/mpeg",
+              "source": {
+                "type": "inline",
+                "dataBase64": "SUQzBAAAAAAA"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

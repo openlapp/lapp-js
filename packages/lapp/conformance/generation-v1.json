@@ -1,0 +1,102 @@
+{
+  "fixtureVersion": "1.0",
+  "lifecycle": {
+    "operation": "video-generation",
+    "target": {
+      "provider": "fixture-provider",
+      "model": "fixture-video-model",
+      "protocol": "fixture-generation",
+      "operation": "video-generation"
+    },
+    "job": {
+      "id": "fixture-job-1",
+      "provider": "fixture-provider",
+      "model": "fixture-video-model",
+      "protocol": "fixture-generation",
+      "operation": "video-generation"
+    },
+    "states": [
+      {
+        "status": "queued",
+        "retryAfterMs": 500
+      },
+      {
+        "status": "running",
+        "progress": 0.5,
+        "retryAfterMs": 500
+      },
+      {
+        "status": "succeeded",
+        "output": {
+          "parts": [
+            {
+              "type": "text",
+              "text": "fixture caption"
+            },
+            {
+              "type": "artifact",
+              "artifact": {
+                "kind": "video",
+                "mediaType": "video/mp4",
+                "duration": 4,
+                "source": {
+                  "type": "inline",
+                  "dataBase64": "AAECAw=="
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "expectedEventKinds": ["queued", "running", "succeeded"]
+  },
+  "failure": {
+    "state": {
+      "status": "failed",
+      "failure": {
+        "code": "PROVIDER_FAILED",
+        "message": "fixture render failed",
+        "retryable": false
+      }
+    },
+    "expectedEventKind": "failed"
+  },
+  "wait": {
+    "pollIntervalMs": 500,
+    "timeoutMs": 600,
+    "expectedTimeoutCode": "WAIT_TIMEOUT",
+    "minimumHintMs": 500,
+    "maximumHintMs": 30000
+  },
+  "stream": {
+    "events": [
+      {
+        "kind": "audio",
+        "dataBase64": "AQI="
+      },
+      {
+        "kind": "audio",
+        "dataBase64": "AwQ="
+      },
+      {
+        "kind": "finish",
+        "mediaType": "audio/mpeg"
+      }
+    ]
+  },
+  "routing": {
+    "providerTypeVariants": [null, "reference-family", "another.family"],
+    "supportedProtocols": ["future-images", "openai-images"],
+    "expectedProtocol": "openai-images",
+    "unsupportedProtocol": "future-video",
+    "expectedUnsupportedCode": "PROTOCOL_NOT_SUPPORTED",
+    "expectedEmptyCapabilitiesCode": "OPERATION_NOT_SUPPORTED"
+  },
+  "redaction": {
+    "sensitiveValue": "fixture-secret-value",
+    "upstreamMessage": "provider rejected fixture-secret-value",
+    "expectedCode": "HTTP_STATUS",
+    "mustNotContain": "fixture-secret-value"
+  }
+}

@@ -31,8 +31,10 @@ Use `--json` when another program needs to consume the result.
 
 If the SDK reports that a LAPP Schema is missing or not registered, check that
 the versioned snapshot is present in `packages/lapp/schema/`; restore it from
-version control if it was removed. `pnpm verify:spec` checks that snapshot
-against the pinned canonical spec commit.
+version control if it was removed. `pnpm verify:spec` checks the schemas,
+documents, and conformance data against the commit or explicitly labelled
+working-tree snapshot recorded in `spec-lock.json`. A working-tree snapshot is
+development provenance only and cannot authorize a release.
 
 ## Profile will not load
 

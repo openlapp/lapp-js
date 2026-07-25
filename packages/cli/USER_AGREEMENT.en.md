@@ -1,7 +1,7 @@
 # LAPP User Agreement and Risk Disclosure
 
 Agreement version: 1.0  
-Last updated: 2026-07-15
+Last updated: 2026-07-17
 
 > Notice to distributors: this is a jurisdiction-neutral distribution template,
 > not legal advice. Before relying on it as a binding agreement, the Distributor
@@ -222,12 +222,19 @@ append-only, so a model that an upstream Provider removes may remain listed
 until you remove it. Verify model identity, capability, price, and availability
 before use.
 
-LAPP v1 assumes one writer. It does not provide profile-wide locking,
-multi-file transactions, merge resolution, or automatic backup. Concurrent
-writers, interrupted changes, manual edits, storage failure, or malicious local
-tampering can cause inconsistency or data loss. Keep appropriate backups, avoid
-simultaneous writers, validate after edits, and review changes before applying
-them.
+LAPP v1 coordinates conforming writers with one current-user lock, stable
+snapshots, compare-and-swap revisions, and best-effort rollback. These controls
+are not access control, automatic backup, or crash-atomic transactions across
+multiple files and Device Vault. Manual editors, non-conforming or malicious
+same-user software, interrupted changes, storage failure, and incomplete
+rollback can still cause inconsistency or data loss.
+
+The writer lock has no heartbeat, automatic expiry, PID-based stale detection,
+or automatic stealing. A crashed writer can block further changes until you
+explicitly inspect and repair the observed lock. Repairing a lock while a writer
+is active can permit concurrent mutations and data loss. Keep appropriate
+backups, do not bypass a lock merely because it appears old, validate after
+edits or partial-failure reports, and review changes before applying them.
 
 Loopback HTTP may be used for local development and is not encrypted by TLS.
 Do not expose an unauthenticated local model server to untrusted users or

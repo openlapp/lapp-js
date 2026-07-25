@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "port",
+  "baseUrl": "https://port.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault://port:443/default" }
+}

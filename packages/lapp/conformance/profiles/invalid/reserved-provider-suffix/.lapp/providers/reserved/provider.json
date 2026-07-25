@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "nul.txt",
+  "baseUrl": "https://api.example.com",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "none" }
+}

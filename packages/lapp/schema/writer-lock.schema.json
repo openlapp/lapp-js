@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lapp.dev/schema/1.0/writer-lock.schema.json",
+  "title": "LAPP v1 writer lock owner.json",
+  "type": "object",
+  "required": ["version", "token", "pid", "createdAt"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "token": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "createdAt": {
+      "type": "string",
+      "description": "Canonical RFC 3339 UTC subset with seconds 00-59; implementations also validate the Gregorian calendar date semantically",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?Z$"
+    }
+  }
+}

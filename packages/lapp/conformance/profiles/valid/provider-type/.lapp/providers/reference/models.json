@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    {
+      "id": "reference-model",
+      "inputModalities": ["text"],
+      "outputModalities": ["text"],
+      "capabilities": ["chat"]
+    }
+  ]
+}

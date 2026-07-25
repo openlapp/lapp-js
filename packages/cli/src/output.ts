@@ -1,6 +1,11 @@
 import {
   MissingEnvSecretError,
   ModelRefreshError,
+  ProfileLockInvalidError,
+  ProfileLockedError,
+  ProfilePathInvalidError,
+  ProfileReadUnstableError,
+  ProfileRevisionConflictError,
   ProfileValidationError,
   TargetResolutionError,
 } from "@openlapp/lapp";
@@ -39,6 +44,13 @@ export function classifyError(error: unknown): CliFailure {
   if (error instanceof TargetResolutionError) return { exitCode: 1, code: error.code, message };
   if (error instanceof MissingEnvSecretError) return { exitCode: 1, code: error.code, message };
   if (error instanceof ModelRefreshError) return { exitCode: 1, code: error.code, message };
+  if (error instanceof ProfileLockedError) return { exitCode: 1, code: error.code, message };
+  if (error instanceof ProfileReadUnstableError) return { exitCode: 1, code: error.code, message };
+  if (error instanceof ProfileLockInvalidError) return { exitCode: 1, code: error.code, message };
+  if (error instanceof ProfilePathInvalidError) return { exitCode: 1, code: error.code, message };
+  if (error instanceof ProfileRevisionConflictError) {
+    return { exitCode: 1, code: "PROFILE_CONFLICT", message };
+  }
   if (credentialCode && [
     "INVALID_SECRET_REFERENCE",
     "UNSUPPORTED_SECRET_SCHEME",
@@ -51,6 +63,7 @@ export function classifyError(error: unknown): CliFailure {
     "VAULT_ACCESS_DENIED",
     "VAULT_OPERATION_FAILED",
     "CREDENTIAL_UPDATE_PARTIAL_FAILURE",
+    "PROFILE_UPDATE_PARTIAL_FAILURE",
   ].includes(credentialCode)) {
     return { exitCode: 1, code: credentialCode, message };
   }

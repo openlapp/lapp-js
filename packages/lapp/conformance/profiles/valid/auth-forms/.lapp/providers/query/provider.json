@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "query",
+  "baseUrl": "https://query.example/v1",
+  "protocols": ["custom-query-api"],
+  "auth": { "type": "query", "name": "api_key", "secret": "env://QUERY_KEY" }
+}

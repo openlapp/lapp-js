@@ -157,9 +157,10 @@ Provider ID、标准化 origin 和认证 type/name；这些字段发生变化后
 
 ## 写入
 
-低级 SDK 管理函数是不可变纯函数，不会自行写盘。异步高级函数
-`upsertProviderWithCredential()` 默认把原始密钥写入 Vault；选择明文必须显式
-指定 storage，并会返回警告。该函数返回新的内存 Profile；检查
-`planChanges()` 后仍需显式调用 `writeProfileAtomic()`。每个变化文件都会先验证，
-再写入同目录临时文件，执行 fsync 后重命名。v1 假定同一时刻只有一个写者，
-不提供 Profile 级事务或备份。
+SDK 管理函数都是不可变纯函数，不会自行写盘或修改 Vault。
+`prepareProviderUpdate()` 应用凭据存储策略：原始密钥默认生成待提交 Vault 写入；
+明文必须显式选择并返回警告。使用 `commitProfileTransaction()` 一起提交结果中的
+`profile` 与可选 `vaultWrite`。高层事务会取得当前用户全局锁、在任何副作用前检查
+预期 revision，并在 Profile 提交失败时回滚 Vault。多文件更新属于协调提交/回滚，
+不是文件系统级原子事务或备份。`writeProfileAtomic()` 仍是底层、仅修改 Profile
+的 primitive。

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "query",
+  "baseUrl": "https://query.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault://query/default?scope=all" }
+}

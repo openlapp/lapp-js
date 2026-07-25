@@ -25,6 +25,8 @@ lapp resolve [--path <path>] (--provider <id> --model <id> | --default <task>) [
 lapp presets [--json]
 lapp ping [--path <path>] [--provider <id> --model <id> | --default <task>] [--json]
 lapp chat [message...] [--path <path>] [--provider <id> --model <id> | --default <task>] [--system <prompt>] [--stream | --json]
+lapp lock inspect [--json]
+lapp lock repair --token <observed-token> --yes [--json]
 lapp help
 lapp version
 ```
@@ -90,6 +92,17 @@ lapp credential delete --provider openai --id secondary --yes
 
 A dry run never prompts and never reads or writes Vault. There is no credential
 get, export, or rebind command.
+
+## Global writer lock
+
+Every CLI mutation uses the same current-user lock across all Profile roots.
+`lapp lock inspect` is read-only and returns the exact validated owner token.
+`lapp lock repair` is an explicit operator recovery command: it requires both
+that exact token and `--yes`, re-reads and compares ownership before atomically
+renaming the lock to a repair-specific sibling and safely deleting it, and
+never infers staleness from age, PID, or a heartbeat. A missing or malformed
+`owner.json` cannot be repaired automatically and returns
+`PROFILE_LOCK_INVALID`; tokenless filesystem recovery is outside the protocol.
 
 ## Models
 

@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    { "id": "demo", "contextWindow": 9007199254740992 }
+  ]
+}

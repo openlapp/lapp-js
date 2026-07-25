@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import {
+  commitProfileTransaction,
   credentialBindingForProvider,
-  loadProfile,
   openSystemCredentialVault,
+  readProfileStable,
   resolveLappRoot,
   upsertProvider,
   type LappProfile,
@@ -28,12 +29,6 @@ const commonOptions = {
   id: { type: "string" },
   json: { type: "boolean" },
 } satisfies CliOptionConfig;
-
-function profileFrom(positionals: string[]): LappProfile {
-  const root = resolveLappRoot(onePath(positionals));
-  if (!fs.existsSync(root)) throw new Error(`profile does not exist: ${root}`);
-  return loadProfile({ path: root });
-}
 
 function providerFrom(profile: LappProfile, providerId: string): ProviderConfig {
   const provider = profile.providers.find((entry) => entry.config.id === providerId);
@@ -84,7 +79,10 @@ export async function commandCredential(argv: string[]): Promise<void> {
       : commonOptions);
   if (values.yes && values["dry-run"]) throw new UsageError("--yes and --dry-run cannot be combined");
 
-  const profile = profileFrom(positionals);
+  const root = resolveLappRoot(onePath(positionals));
+  if (!fs.existsSync(root)) throw new Error(`profile does not exist: ${root}`);
+  const stable = readProfileStable({ path: root });
+  const profile = stable.value;
   const providerId = requiredString(values, "provider");
   const provider = providerFrom(profile, providerId);
   const { ref, credentialId } = credentialRef(provider, optionalString(values, "id"));
@@ -117,7 +115,16 @@ export async function commandCredential(argv: string[]): Promise<void> {
       else printCredentialPlan(ref, false, "delete");
       return;
     }
-    const deleted = await (await openSystemCredentialVault()).delete(ref);
+    const result = await commitProfileTransaction({
+      rootDir: root,
+      expectedRevision: stable.revision,
+      before: profile,
+      next: profile,
+      profileChanged: false,
+      vault: await openSystemCredentialVault(),
+      vaultDeleteRef: ref,
+    });
+    const deleted = result.vaultChanged;
     if (values.json) printJson({ credential: { providerId, credentialId, ref, deleted, applied: true } });
     else console.log(`${deleted ? "deleted" : "not found"}: ${ref}`);
     return;
@@ -143,6 +150,8 @@ export async function commandCredential(argv: string[]): Promise<void> {
     result = await writeProfileWithVault(profile, next, {
       apply,
       dryRun: Boolean(values["dry-run"]),
+      rootDir: root,
+      expectedRevision: stable.revision,
     }, apply ? { ref, secret, overwrite: Boolean(values.overwrite) } : undefined);
   } catch (error) {
     if (error instanceof Error) error.message = redact(error.message, [secret]);

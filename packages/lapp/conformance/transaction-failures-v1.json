@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "name": "profile-only-rollback-failed",
+      "vaultMutated": false,
+      "profileRestored": false,
+      "vaultRestored": true,
+      "expectedCode": "PROFILE_UPDATE_PARTIAL_FAILURE",
+      "expectedDetailCodes": []
+    },
+    {
+      "name": "combined-profile-rollback-failed",
+      "vaultMutated": true,
+      "profileRestored": false,
+      "vaultRestored": true,
+      "expectedCode": "CREDENTIAL_UPDATE_PARTIAL_FAILURE",
+      "expectedDetailCodes": ["PROFILE_UPDATE_PARTIAL_FAILURE"]
+    },
+    {
+      "name": "combined-vault-restore-failed",
+      "vaultMutated": true,
+      "profileRestored": true,
+      "vaultRestored": false,
+      "expectedCode": "CREDENTIAL_UPDATE_PARTIAL_FAILURE",
+      "expectedDetailCodes": []
+    },
+    {
+      "name": "combined-both-restores-failed",
+      "vaultMutated": true,
+      "profileRestored": false,
+      "vaultRestored": false,
+      "expectedCode": "CREDENTIAL_UPDATE_PARTIAL_FAILURE",
+      "expectedDetailCodes": ["PROFILE_UPDATE_PARTIAL_FAILURE"]
+    }
+  ]
+}

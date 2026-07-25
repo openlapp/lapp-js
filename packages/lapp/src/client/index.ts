@@ -74,9 +74,9 @@ export interface CreateClientOptions {
   resolver?: CredentialResolver;
   /**
    * Scrub the credential resolved for each request from successful response
-   * objects and stream events. The CLI enables this so stdout cannot echo a
-   * Vault credential. SDK callers may leave it disabled to preserve upstream
-   * response bytes exactly.
+   * objects and stream events. Defaults to `true`. Set this explicitly to
+   * `false` only when exact upstream response preservation is required.
+   * Errors and diagnostics are always redacted.
    */
   redactSuccessfulSecrets?: boolean;
   /**
@@ -170,7 +170,7 @@ export function createLappClient(options: CreateClientOptions): LappClient {
   const protocol = plan.protocol;
   const adapter = ADAPTERS[protocol]!;
   const doFetch = fetchImpl ?? globalThis.fetch;
-  const redactSuccessfulSecrets = options.redactSuccessfulSecrets ?? false;
+  const redactSuccessfulSecrets = options.redactSuccessfulSecrets ?? true;
 
   async function requestContext(): Promise<{
     ctx: AdapterContext;

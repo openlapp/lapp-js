@@ -150,7 +150,7 @@ Vault 保护的是静态存储，不是应用沙箱：同一 OS 用户下的兼�
 ## 刷新模型
 
 ```ts
-import { refreshModels, writeProfileAtomic } from "@openlapp/lapp";
+import { refreshModels } from "@openlapp/lapp";
 
 const abortController = new AbortController();
 const result = await refreshModels(profile, "openai", {
@@ -160,7 +160,6 @@ const result = await refreshModels(profile, "openai", {
 });
 
 console.log(result.added, result.diagnostics);
-await writeProfileAtomic(result.nextProfile, { before: profile });
 ```
 
 `refreshModels()` 请求一个 Provider 的已配置发现 URL，并返回
@@ -171,6 +170,8 @@ await writeProfileAtomic(result.nextProfile, { before: profile });
 凭据选项是 `{ env?, vault?, resolver? }`，其优先级和禁止回退规则与
 `resolveConnection()` 相同。测试可以注入 `options.fetch`。`options.signal` 会
 传递到每个发现请求；携带凭据的请求拒绝重定向。
+请按下文示例，把 `result.nextProfile` 与稳定读取获得的 revision 一起交给
+`commitProfileTransaction()` 提交。
 
 ## 管理和写入 Profile
 
@@ -180,22 +181,36 @@ await writeProfileAtomic(result.nextProfile, { before: profile });
 |------|------|
 | `createProfile({ rootDir })` | 创建空的内存 Profile。 |
 | `upsertProvider(profile, input)` | 添加或 patch Provider；保留未提供字段。 |
-| `upsertProviderWithCredential(profile, input, options?)` | 添加或 patch Provider，并应用 SDK 的凭据存储默认值。 |
+| `prepareProviderUpdate(profile, input)` | 纯函数式准备 Provider 与可选待提交 Vault 写入，并应用 SDK 凭据存储默认值。 |
 | `upsertModel(profile, input)` | 添加或 patch 模型；保留未提供字段。 |
 | `removeProvider(profile, id)` | 删除未被引用的 Provider。 |
 | `removeModel(profile, target)` | 按 ID 或 alias 删除未被引用的模型。 |
 | `setDefault(profile, task, target)` | 保存 canonical 任务默认值。 |
 
-使用 `planChanges(before, after)` 预览文件变化；使用
-`writeProfileAtomic(after, { before })` 验证并写入标准 JSON。写入会拒绝路径逃逸和
-非法 Profile。v1 假定同一时刻只有一个写者。
+使用 `planChanges(before, after)` 预览文件变化。公开的
+`writeProfileAtomic(after, { before })` 底层 primitive 会验证并写入标准 JSON，
+但不会自行取得全局锁或执行 CAS；专用集成必须同时补齐两者。官方 Profile-only、
+Vault-only 和组合变更统一使用 `commitProfileTransaction()`：它持有当前用户全局
+写锁，强制要求预期 revision，在第一次副作用前再次检查，并协调回滚。
 
-新增原始凭据时，使用异步的受管写入接口：
+Node Manager Host 对渲染器暴露的是另一种 opaque revision：它组合 canonical
+Profile revision 与 Manager 自己维护的 Vault generation。因此，即使仅轮换 Vault、
+Profile 字节没有变化，旧 snapshot 也会失效并返回 `PROFILE_CONFLICT`。
+
+新增原始凭据时，先准备，再执行一次受锁事务：
 
 ```ts
-import { upsertProviderWithCredential } from "@openlapp/lapp";
+import {
+  commitProfileTransaction,
+  loadProfile,
+  prepareProviderUpdate,
+  readStable,
+  resolveLappRoot,
+} from "@openlapp/lapp";
 
-const result = await upsertProviderWithCredential(profile, {
+const root = resolveLappRoot();
+const current = readStable(root, () => loadProfile({ path: root }));
+const prepared = prepareProviderUpdate(current.value, {
   id: "openai",
   baseUrl: "https://api.openai.com/v1",
   protocols: ["openai-responses"],
@@ -204,10 +219,15 @@ const result = await upsertProviderWithCredential(profile, {
     credential: { secret: userInput },
   },
   models: [],
-}, { vault });
+});
 
-// Vault 已更新，但磁盘尚未写入。
-await writeProfileAtomic(result.profile, { before: profile });
+await commitProfileTransaction({
+  rootDir: root,
+  before: current.value,
+  next: prepared.profile,
+  expectedRevision: current.revision,
+  ...(prepared.vaultWrite ? { vaultWrite: prepared.vaultWrite } : {}),
+});
 ```
 
 省略 `credential.storage` 时默认写入 Vault，credential ID 默认为 `default`。
@@ -216,9 +236,51 @@ SDK 从最终 Provider 配置推导绑定，调用方不能自行传入 origin�
 只有显式传入 `{ secret, storage: "plaintext" }` 才会把原始密钥放入 Profile，
 此时结果包含 `PLAINTEXT_SECRET_IN_USE` warning。
 
-`upsertProviderWithCredential()` 返回
-`{ profile, credentialRef?, warnings }`，绝不自行把 Profile 写入磁盘。已有
+`prepareProviderUpdate()` 返回
+`{ profile, credentialRef?, vaultWrite?, warnings }`，没有任何副作用。
+`commitProfileTransaction()` 在同一个全局锁内用 CAS 与回滚提交可选 Vault 写入和
+Profile。已有
 `AuthConfig` 的调用方仍可使用底层同步 `upsertProvider()`；该函数不管理或解析凭据。
+
+## 桌面 Manager Host
+
+Node 嵌入应用可以把 Profile、Vault 与 Provider 连接测试权限留在可信进程。
+历史 host bridge 从显式 Node-only 子路径导入：
+
+```ts
+import { createNodeLappManagerHost } from "@openlapp/lapp/manager-host";
+
+const host = createNodeLappManagerHost({
+  path: process.env.LAPP_HOME,
+});
+```
+
+Renderer 与 preload 只应从 browser-safe contract 子路径导入类型和协议版本：
+
+```ts
+import type { LappManagerBridgeV1 } from "@openlapp/lapp/manager-contract";
+```
+
+`LappManagerBridgeV1` 只暴露五项窄能力：`handshake()`、`getSnapshot()`、
+`transact()`、`testConnection()` 与可选 `subscribe()`。Snapshot 含不透明 revision
+和脱敏后的 Profile/凭据状态，绝不包含明文凭据。变更使用带预期 revision 的语义
+`ManagerOperation`。Node Host 会串行事务、通过当前用户全局跨进程锁协调官方
+writer、在修改前重新核对 revision，并在后续 Profile 提交失败时恢复 Vault 记录。
+
+Bridge 不提供凭据 get、resolve、export 或 rebind 操作。绑定不匹配时必须先保存预期
+Provider 配置，再重新录入凭据。不要向 renderer 暴露底层 `CredentialVault`、文件
+系统、网络、事务 helper 或通用 IPC API。
+
+SDK 为 CLI 等官方 writer 集成公开
+`commitProfileTransaction()`、`computeProfileRevision()`、`readProfileStable()`、`readStable()`、
+`withWriterLock()`、`inspectWriterLock()` 与 `repairWriterLock()`。所有
+`LAPP_HOME` 通过 `LAPP_STATE_HOME` 共享当前 OS 用户写锁；正常 writer 不会按
+年龄、PID 或 heartbeat 偷锁。修复必须由 operator 显式执行，并提供刚观察到的
+owner token。合同见[API 参考](../../packages/lapp/docs/api.md)。
+
+目前还没有稳定、受支持的 GUI 正式版。
+[`openlapp/lapp-manager`](https://github.com/openlapp/lapp-manager) 已包含当前的
+Tauri/Vue/Naive UI Alpha 实现及其合同；Electron 示例仅保留为已过时的历史原型。
 
 ## 直连客户端
 
@@ -230,8 +292,6 @@ const client = createLappClient({
   provider: "openai",
   model: "gpt-4o-mini",
   vault,
-  // Provider 内容会写入终端或日志时启用。
-  redactSuccessfulSecrets: true,
 });
 
 const response = await client.chat({
@@ -246,9 +306,9 @@ const response = await client.chat({
 操作生效。发送认证信息前，client 会再次核对最终请求 origin，并使用
 `redirect: "error"`。
 
-CLI 始终启用 `redactSuccessfulSecrets`，防止上游回显 Vault 凭据并将其写入
-stdout。SDK 调用方也可以显式启用；它会在成功内容与凭据字面值相同时改写响应，
-所以 SDK 默认关闭。
+`redactSuccessfulSecrets` 默认为 `true`，上游即使回显已解析凭据，也不会把它
+放进成功响应对象或 stream event。只有必须原样保留上游成功响应时才显式设为
+`false`。错误、日志和诊断始终脱敏。
 
 客户端方法：
 
@@ -264,11 +324,44 @@ stdout。SDK 调用方也可以显式启用；它会在成功内容与凭据字�
 stream、tools 或认证字段。`AbortSignal` 会传到底层请求。工具参数必须能解析为对象
 并通过工具 JSON Schema 后，handler 才会执行。
 
+## 多媒体生成客户端
+
+根包还导出四个彼此独立的工厂：`createImageGenerationClient`、
+`createVideoGenerationClient`、`createSpeechSynthesisClient` 和
+`createMusicGenerationClient`。图片与语音分别使用通用 `openai-images` 和
+`openai-audio-speech` wire。视频与音乐提供稳定的输入、Job、wait、stream、输出 part
+和错误类型，但 LAPP 1.0 不内置其 wire Adapter；因此构造时会在解析凭据或访问网络前
+返回 `PROTOCOL_NOT_SUPPORTED`。
+
+```ts
+const image = createImageGenerationClient({ profile });
+const result = await image.generate({
+  prompt: "一个小红圆",
+  count: 1,
+  size: { width: 1024, height: 1024 },
+  outputFormat: "png",
+});
+
+const speech = createSpeechSynthesisClient({ profile });
+for await (const event of speech.stream({ text: "你好", voice: "alloy" })) {
+  if (event.kind === "audio") consume(event.bytes);
+}
+```
+
+每个工厂只按模型或 Provider 声明的协议顺序选择第一个已支持协议；不会读取
+`providerType`，不会根据 ID/URL 猜供应商、探测服务端或静默切换 wire。`extra` 只能
+使用 Adapter 白名单，不能覆盖保留字段。URL artifact 不会自动下载；必须调用
+`downloadArtifact(artifact, { maxBytes })`。Provider 认证仅发送给同源 artifact URL，
+并拒绝重定向。`wait()` 默认每 2 秒轮询、30 分钟超时；本地超时或终止不代表远端取消。
+
 ## 错误
 
-公开类型化错误包括 `ProfileValidationError`、`TargetResolutionError`、
-`CredentialError`、`MissingEnvSecretError`、`ModelRefreshError` 和
-`StreamingUnsupportedError`。协议无交集时使用
+公开类型化错误还包括 `ProfileLockedError`、`ProfileLockInvalidError`、
+`ProfileReadUnstableError`、`ProfileRevisionConflictError`、
+`ProfilePathInvalidError` 与 `ProfileUpdatePartialFailureError`，以及
+`ProfileValidationError`、`TargetResolutionError`、`CredentialError`、
+`MissingEnvSecretError`、`ModelRefreshError` 和 `StreamingUnsupportedError`。
+协议无交集时使用
 `TargetResolutionError.code === "PROTOCOL_NOT_SUPPORTED"`。
 
 应匹配稳定的 `CredentialError.code`，不要匹配已经脱敏的 message：
@@ -287,6 +380,10 @@ VAULT_OPERATION_FAILED
 CREDENTIAL_UPDATE_PARTIAL_FAILURE
 ```
 
-这些公开错误绝不暴露原生 cause 或凭据值。
+这些公开错误绝不暴露原生 cause 或凭据值。组合事务一旦已经修改 Vault，
+只要 Profile 回滚或 Vault 恢复任一不完整，顶层就使用凭据 partial-failure
+code；Profile 回滚不完整时，稳定的 `causes` 还包含
+`PROFILE_UPDATE_PARTIAL_FAILURE`。即使两类恢复同时失败，也仍由凭据 code
+确定性优先。
 
 完整导出索引见 [API 参考](../../packages/lapp/docs/api.md)。

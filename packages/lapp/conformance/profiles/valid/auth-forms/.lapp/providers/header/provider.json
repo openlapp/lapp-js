@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "header",
+  "baseUrl": "https://header.example/v1",
+  "protocols": ["anthropic-messages"],
+  "auth": { "type": "header", "name": "X-Custom-Key", "secret": "env://HEADER_KEY" }
+}

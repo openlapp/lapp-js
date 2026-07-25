@@ -181,6 +181,16 @@ describe("createLappClient", () => {
     expect(called).toBe(false);
   });
 
+  it("rejects a static header that collides case-insensitively with header auth", () => {
+    expect(() => createLappClient({
+      profile: profile(
+        "openai-chat-completions",
+        { type: "header", name: "X-Credential", secret: "credential" },
+        { requestHeaders: { "x-credential": "static-value" } },
+      ),
+    })).toThrow(/invalid profile/i);
+  });
+
   it("uses Responses function_call items and call_id for tool history", async () => {
     let body: Record<string, unknown> | undefined;
     const fetchImpl: typeof fetch = async (_input, init) => {

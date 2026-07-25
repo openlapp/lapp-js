@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    {
+      "id": "BAAI/bge-m3",
+      "name": "BGE-M3",
+      "aliases": ["bge-m3", "embedding-default"],
+      "type": "embedding",
+      "inputModalities": ["text"],
+      "outputModalities": ["embedding"],
+      "capabilities": ["embedding"],
+      "contextWindow": 8192,
+      "enabled": true
+    },
+    {
+      "id": "deepseek-ai/DeepSeek-V4-Flash",
+      "name": "DeepSeek V4 Flash on SiliconFlow",
+      "aliases": ["deepseek-v4-flash", "ds-v4-flash-sf"],
+      "type": "chat",
+      "inputModalities": ["text"],
+      "outputModalities": ["text"],
+      "capabilities": ["chat", "stream", "reasoning"],
+      "contextWindow": 1000000,
+      "enabled": true
+    }
+  ]
+}

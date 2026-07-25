@@ -1,6 +1,6 @@
 {
   "name": "@openlapp/lapp",
-  "version": "1.0.0",
+  "version": "0.1.2",
   "description": "TypeScript SDK for LAPP (Local AI Provider Profiles): read, validate, write, manage, and send requests to configured providers.",
   "license": "MIT",
   "type": "module",
@@ -16,6 +16,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./manager-contract": {
+      "types": "./dist/manager/contract.d.ts",
+      "import": "./dist/manager/contract.js",
+      "require": "./dist/manager/contract.cjs"
+    },
+    "./manager-host": {
+      "types": "./dist/manager/host.d.ts",
+      "import": "./dist/manager/host.js",
+      "require": "./dist/manager/host.cjs"
     }
   },
   "files": [
@@ -26,6 +36,7 @@
     "spec.en.md",
     "spec.zh-CN.md",
     "schema",
+    "conformance",
     "README.md"
   ],
   "repository": {
@@ -35,6 +46,7 @@
   },
   "keywords": ["lapp", "ai", "llm", "provider", "profile", "sdk", "openai", "anthropic", "claude", "model-registry"],
   "publishConfig": {
+    "registry": "http://127.0.0.1:4873/",
     "access": "public"
   },
   "scripts": {

@@ -27,7 +27,7 @@ vi.mock("@openlapp/lapp", async (importOriginal) => {
     writeProfileAtomic: async (...args: unknown[]) => {
       if (vaultHarness.failProfileWrite) {
         const error = new Error("simulated profile write failure");
-        if (vaultHarness.failProfileRollback) error.name = "ProfileWriteRollbackError";
+        if (vaultHarness.failProfileRollback) error.name = "ProfileUpdatePartialFailureError";
         throw error;
       }
       return (actual.writeProfileAtomic as (...values: unknown[]) => Promise<unknown>)(...args);
@@ -79,6 +79,7 @@ vi.mock("../src/secret-input.js", () => ({
 }));
 
 import { main, VERSION } from "../src/index.js";
+import { writerLockPaths } from "@openlapp/lapp";
 
 interface RunResult {
   code: number;
@@ -89,6 +90,7 @@ interface RunResult {
 let tempDir: string;
 let root: string;
 let previousKey: string | undefined;
+let previousStateHome: string | undefined;
 
 function writeJson(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -161,7 +163,9 @@ beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "lapp-cli-v1-"));
   root = path.join(tempDir, ".lapp");
   previousKey = process.env.LAPP_CLI_TEST_KEY;
+  previousStateHome = process.env.LAPP_STATE_HOME;
   process.env.LAPP_CLI_TEST_KEY = "test-secret-value";
+  process.env.LAPP_STATE_HOME = path.join(tempDir, "state");
   seedProfile();
 });
 
@@ -169,6 +173,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
   if (previousKey === undefined) delete process.env.LAPP_CLI_TEST_KEY;
   else process.env.LAPP_CLI_TEST_KEY = previousKey;
+  if (previousStateHome === undefined) delete process.env.LAPP_STATE_HOME;
+  else process.env.LAPP_STATE_HOME = previousStateHome;
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -780,6 +786,42 @@ describe("LAPP v1 CLI contract", () => {
       version: 1,
       error: { code: "USAGE", message: "--stream cannot be combined with --json" },
     });
+  });
+
+  it("inspects locks and requires an exact token plus --yes for explicit repair", async () => {
+    const unlocked = await run(["lock", "inspect", "--json"]);
+    expect(jsonOutput(unlocked).data.writerLock).toMatchObject({ locked: false });
+
+    const { lockDirectory, ownerFile } = writerLockPaths();
+    const token = "00000000-0000-4000-8000-000000000011";
+    fs.mkdirSync(lockDirectory, { recursive: true });
+    writeJson(ownerFile, {
+      version: 1,
+      token,
+      pid: 1,
+      createdAt: "2000-01-01T00:00:00.000Z",
+    });
+    const inspected = await run(["lock", "inspect", "--json"]);
+    expect(jsonOutput(inspected).data.writerLock).toMatchObject({
+      locked: true,
+      ownerValid: true,
+      owner: { token },
+    });
+
+    const unconfirmed = await run(["lock", "repair", "--token", token]);
+    expect(unconfirmed).toMatchObject({ code: 2, stdout: "" });
+    expect(fs.existsSync(lockDirectory)).toBe(true);
+
+    const changed = await run([
+      "lock", "repair", "--token", "00000000-0000-4000-8000-000000000012", "--yes", "--json",
+    ]);
+    expect(changed.code).toBe(1);
+    expect(JSON.parse(changed.stderr).error.code).toBe("PROFILE_LOCK_INVALID");
+    expect(fs.existsSync(lockDirectory)).toBe(true);
+
+    const repaired = await run(["lock", "repair", "--token", token, "--yes", "--json"]);
+    expect(jsonOutput(repaired).data.writerLock).toMatchObject({ repaired: true, owner: { token } });
+    expect(fs.existsSync(lockDirectory)).toBe(false);
   });
 
   it("reports the version committed in package.json", async () => {

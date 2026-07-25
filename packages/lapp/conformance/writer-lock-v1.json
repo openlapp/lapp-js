@@ -1,0 +1,49 @@
+{
+  "cases": [
+    {
+      "name": "valid-owner",
+      "utf8": "{\"version\":1,\"token\":\"123e4567-e89b-12d3-a456-426614174000\",\"pid\":9007199254740991,\"createdAt\":\"2026-07-17T09:30:00.123Z\"}",
+      "expected": "OK"
+    },
+    {
+      "name": "unsafe-pid",
+      "utf8": "{\"version\":1,\"token\":\"123e4567-e89b-12d3-a456-426614174000\",\"pid\":9007199254740992,\"createdAt\":\"2026-07-17T09:30:00.123Z\"}",
+      "expected": "IJSON_UNSAFE_INTEGER"
+    },
+    {
+      "name": "noncanonical-token",
+      "utf8": "{\"version\":1,\"token\":\"123E4567-E89B-12D3-A456-426614174000\",\"pid\":1234,\"createdAt\":\"2026-07-17T09:30:00.123Z\"}",
+      "expected": "SCHEMA_WRITER_LOCK"
+    },
+    {
+      "name": "non-utc-timestamp",
+      "utf8": "{\"version\":1,\"token\":\"123e4567-e89b-12d3-a456-426614174000\",\"pid\":1234,\"createdAt\":\"2026-07-17T17:30:00+08:00\"}",
+      "expected": "SCHEMA_WRITER_LOCK"
+    },
+    {
+      "name": "invalid-calendar-date",
+      "utf8": "{\"version\":1,\"token\":\"123e4567-e89b-12d3-a456-426614174000\",\"pid\":1234,\"createdAt\":\"2026-02-31T09:30:00Z\"}",
+      "expected": "WRITER_LOCK_TIMESTAMP_INVALID"
+    },
+    {
+      "name": "heartbeat-field",
+      "utf8": "{\"version\":1,\"token\":\"123e4567-e89b-12d3-a456-426614174000\",\"pid\":1234,\"createdAt\":\"2026-07-17T09:30:00.123Z\",\"heartbeatAt\":\"2026-07-17T09:30:01.123Z\"}",
+      "expected": "SCHEMA_WRITER_LOCK"
+    },
+    {
+      "name": "duplicate-version",
+      "utf8": "{\"version\":1,\"version\":1,\"token\":\"123e4567-e89b-12d3-a456-426614174000\",\"pid\":1234,\"createdAt\":\"2026-07-17T09:30:00Z\"}",
+      "expected": "IJSON_DUPLICATE_KEY"
+    },
+    {
+      "name": "invalid-unicode",
+      "utf8": "{\"version\":1,\"token\":\"\\ud800\",\"pid\":1234,\"createdAt\":\"2026-07-17T09:30:00Z\"}",
+      "expected": "IJSON_INVALID_UNICODE"
+    },
+    {
+      "name": "invalid-utf8",
+      "base64": "eyJ2ZXJzaW9uIjoxLP99",
+      "expected": "IJSON_INVALID_UTF8"
+    }
+  ]
+}

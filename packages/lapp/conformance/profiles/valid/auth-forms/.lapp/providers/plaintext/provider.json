@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "plaintext",
+  "baseUrl": "https://plaintext.example/v1",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "explicit-plaintext-secret" }
+}

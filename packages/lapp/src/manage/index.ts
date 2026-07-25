@@ -2,7 +2,7 @@ import path from "node:path";
 import { CredentialError, ProfileValidationError, TargetResolutionError } from "../types.js";
 import type {
   AuthConfig,
-  CredentialVault,
+  CredentialBinding,
   Extensions,
   LappProfile,
   ModelDiscoveryConfig,
@@ -15,7 +15,6 @@ import { attachProfileRoot, copyProfileRoot } from "../profile-location.js";
 import {
   credentialBindingForProvider,
   formatVaultSecretRef,
-  openSystemCredentialVault,
 } from "../secret/index.js";
 
 export interface CreateProfileInput {
@@ -25,6 +24,7 @@ export interface CreateProfileInput {
 export interface ProviderInput {
   id: string;
   name?: string;
+  providerType?: string;
   enabled?: boolean;
   baseUrl?: string;
   protocols?: string[];
@@ -61,13 +61,17 @@ export interface CredentialWarning {
   message: string;
 }
 
-export interface UpsertProviderWithCredentialOptions {
-  vault?: CredentialVault;
+export interface PendingVaultWrite {
+  ref: string;
+  secret: string;
+  binding: CredentialBinding;
+  overwrite: boolean;
 }
 
-export interface UpsertProviderWithCredentialResult {
+export interface PrepareProviderUpdateResult {
   profile: LappProfile;
   credentialRef?: string;
+  vaultWrite?: PendingVaultWrite;
   warnings: CredentialWarning[];
 }
 
@@ -142,6 +146,7 @@ export function upsertProvider(profile: LappProfile, input: ProviderInput): Lapp
     schemaVersion: "1.0",
     id: input.id,
     ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.providerType !== undefined ? { providerType: input.providerType } : {}),
     ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
     ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
     ...(input.protocols !== undefined ? { protocols: [...input.protocols] } : {}),
@@ -166,15 +171,13 @@ export function upsertProvider(profile: LappProfile, input: ProviderInput): Lapp
 }
 
 /**
- * Add or patch a provider while applying the SDK's credential-storage default.
- * A raw credential is written to the current-user Vault unless plaintext is
- * explicitly selected. This function only returns an in-memory profile.
+ * Prepare a provider update and an optional Vault write without side effects.
+ * Pass both to `commitProfileTransaction()` for locked CAS + rollback.
  */
-export async function upsertProviderWithCredential(
+export function prepareProviderUpdate(
   profile: LappProfile,
   input: ManagedProviderInput,
-  options: UpsertProviderWithCredentialOptions = {},
-): Promise<UpsertProviderWithCredentialResult> {
+): PrepareProviderUpdateResult {
   const { auth: managedAuth, ...providerFields } = input;
   if (managedAuth === undefined) {
     return { profile: upsertProvider(profile, providerFields), warnings: [] };
@@ -229,21 +232,25 @@ export async function upsertProviderWithCredential(
     );
   }
 
+  let pendingVaultWrite: PendingVaultWrite | undefined;
   if (credentialRef && vaultWrite) {
     const config = nextProfile.providers.find((entry) => entry.config.id === input.id)!.config;
     const binding = credentialBindingForProvider(config);
     if (!binding) {
       throw new CredentialError("INVALID_SECRET_REFERENCE", "credential binding is missing");
     }
-    const vault = options.vault ?? await openSystemCredentialVault();
-    await vault.put(credentialRef, vaultWrite.secret, binding, {
+    pendingVaultWrite = {
+      ref: credentialRef,
+      secret: vaultWrite.secret,
+      binding,
       overwrite: vaultWrite.overwrite,
-    });
+    };
   }
 
   return {
     profile: nextProfile,
     ...(credentialRef ? { credentialRef } : {}),
+    ...(pendingVaultWrite ? { vaultWrite: pendingVaultWrite } : {}),
     warnings,
   };
 }

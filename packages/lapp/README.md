@@ -1,5 +1,9 @@
 # @openlapp/lapp
 
+> `0.x` builds are internal betas served only by the loopback OpenLAPP
+> Registry. Configure the local `@openlapp` scope before using the install
+> command below. Public npmjs installation starts with `1.0.0`.
+
 TypeScript SDK for [LAPP](https://github.com/openlapp/lapp), a local AI
 provider and model registry. Load connection details and credentials, then call
 the upstream provider directly.
@@ -40,16 +44,15 @@ canonical model ID, selected protocol, endpoint, headers, and resolved auth for
 a trusted caller. It accepts injected `env`, `vault`, or `resolver` options;
 credential schemes never fall back to one another.
 
-The official high-level writer stores new raw credentials in the current
-user's system Vault by default and places a
-`vault://provider/credential` reference in the profile. Plaintext remains a
-valid explicit option and produces a warning; `env://NAME` remains available
-for externally managed secrets.
+The official planner defaults new raw credentials to a pending write for the
+current user's system Vault and places a `vault://provider/credential`
+reference in the profile. Plaintext remains an explicit warned option;
+`env://NAME` remains available for externally managed secrets.
 
 ```ts
-import { upsertProviderWithCredential } from "@openlapp/lapp";
+import { prepareProviderUpdate } from "@openlapp/lapp";
 
-const result = await upsertProviderWithCredential(profile, {
+const result = prepareProviderUpdate(profile, {
   id: "openai",
   baseUrl: "https://api.openai.com/v1",
   protocols: ["openai-responses"],
@@ -57,22 +60,26 @@ const result = await upsertProviderWithCredential(profile, {
 });
 ```
 
-The call may update the Vault but only returns an in-memory profile; persist it
-explicitly with `writeProfileAtomic()`. `openSystemCredentialVault()` and
-`createCredentialResolver()` expose the lower-level Vault and resolution APIs.
+The call is side-effect free and may return `vaultWrite`. Pass the prepared
+profile, optional Vault write, and stable-read revision to
+`commitProfileTransaction()` so one current-user global lock covers CAS,
+Profile persistence, Vault mutation, and rollback. `writeProfileAtomic()` and
+`openSystemCredentialVault()` remain low-level single-store primitives.
 
 ## Refresh the local model directory
 
 ```ts
-import { refreshModels, writeProfileAtomic } from "@openlapp/lapp";
+import { refreshModels } from "@openlapp/lapp";
 
 const result = await refreshModels(profile, "openai");
-await writeProfileAtomic(result.nextProfile, { before: profile });
 ```
 
 Refresh is explicit and does not write by itself. It only appends new remote
 IDs and may fill missing display names; it never removes or overwrites existing
 local models.
+Commit `result.nextProfile` with `commitProfileTransaction()` and the revision
+from the stable read; do not write the multi-file Profile outside the global
+writer lock.
 
 ## Optional direct-call client
 
@@ -89,11 +96,20 @@ console.log(response.text);
 The factory is synchronous and does not resolve credentials. Each provider
 operation resolves again immediately before use, so Vault rotation is visible
 on the next operation and resolved plaintext is not cached by the client.
+Successful responses redact the resolved credential by default. Exact upstream
+success preservation requires explicit `redactSuccessfulSecrets: false`;
+errors and diagnostics are always redacted.
 
 The bundled client supports `openai-chat-completions`, `openai-responses`, and
 `anthropic-messages`, including streaming and tool calls. Other protocol IDs
 remain available through `resolveConnection()` for applications that implement
 them.
+
+Separate media factories provide generic `openai-images` image generation and
+`openai-audio-speech` synthesis/streaming. Video and music public types are
+present, but LAPP 1.0 intentionally bundles no wire adapter for them and returns
+`PROTOCOL_NOT_SUPPORTED` before network access. Media routing ignores the
+optional `providerType` metadata.
 
 ## Documentation
 

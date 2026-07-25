@@ -8,15 +8,16 @@ import {
   formatVaultSecretRef,
   parseSecretRef,
   parseVaultSecretRef,
+  prepareProviderUpdate,
   refreshModels,
   selectConnection,
   upsertProvider,
-  upsertProviderWithCredential,
   validateProfile,
   type CredentialBinding,
   type CredentialResolver,
   type CredentialVault,
   type LappProfile,
+  type ManagedProviderInput,
 } from "../src/index.js";
 import {
   createCredentialVaultFromKeyring,
@@ -63,6 +64,23 @@ function erroringVault(message: string): CredentialVault {
     async getPassword(): Promise<string | undefined> { throw new Error(message); }
     async deleteCredential(): Promise<boolean> { throw new Error(message); }
   });
+}
+
+async function upsertProviderWithCredential(
+  profile: LappProfile,
+  input: ManagedProviderInput,
+  options: { vault: CredentialVault },
+) {
+  const result = prepareProviderUpdate(profile, input);
+  if (result.vaultWrite) {
+    await options.vault.put(
+      result.vaultWrite.ref,
+      result.vaultWrite.secret,
+      result.vaultWrite.binding,
+      { overwrite: result.vaultWrite.overwrite },
+    );
+  }
+  return result;
 }
 
 async function vaultProfile(vault: CredentialVault): Promise<LappProfile> {
@@ -329,9 +347,9 @@ describe("system keyring Vault adapter", () => {
 });
 
 describe("managed credentials and request-time resolution", () => {
-  it("defaults raw SDK credentials to vault and only writes plaintext explicitly", async () => {
+  it("prepares Vault storage without side effects and only writes plaintext explicitly", async () => {
     const vault = fakeVault();
-    const result = await upsertProviderWithCredential(
+    const result = prepareProviderUpdate(
       createProfile({ rootDir: process.cwd() }),
       {
         id: "provider",
@@ -339,13 +357,14 @@ describe("managed credentials and request-time resolution", () => {
         protocols: ["openai-chat-completions"],
         auth: { type: "bearer", credential: { secret: "sk-default-vault" } },
       },
-      { vault },
     );
     expect(result.credentialRef).toBe(reference);
     expect(result.profile.providers[0]!.config.auth).toEqual({
       type: "bearer",
       secret: reference,
     });
+    expect(result.vaultWrite).toMatchObject({ ref: reference, secret: "sk-default-vault" });
+    expect(FakeAsyncEntry.records.size).toBe(0);
     expect(result.warnings).toEqual([]);
 
     const plaintext = await upsertProviderWithCredential(
@@ -740,7 +759,7 @@ describe("managed credentials and request-time resolution", () => {
     expect(authorizations).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
   });
 
-  it("can redact an echoed Vault credential from successful chat, raw, and stream results", async () => {
+  it("redacts an echoed Vault credential from successful chat, raw, and stream results by default", async () => {
     const vault = fakeVault();
     const secret = "opaque/success value +47!";
     const result = await upsertProviderWithCredential(
@@ -759,7 +778,6 @@ describe("managed credentials and request-time resolution", () => {
       provider: "provider",
       model: "model",
       vault,
-      redactSuccessfulSecrets: true,
       fetchImpl: async (_input, init) => {
         const request = JSON.parse(String(init?.body ?? "{}")) as { stream?: boolean };
         if (request.stream) {
@@ -785,6 +803,19 @@ describe("managed credentials and request-time resolution", () => {
     for await (const event of client.stream({ messages: [] })) events.push(event);
     expect(JSON.stringify(events)).not.toContain(secret);
     expect(events).toContainEqual({ kind: "delta", text: "<redacted>" });
+
+    const preservingClient = createLappClient({
+      profile: result.profile,
+      provider: "provider",
+      model: "model",
+      vault,
+      redactSuccessfulSecrets: false,
+      fetchImpl: async () => new Response(JSON.stringify({
+        choices: [{ message: { content: secret }, finish_reason: "stop" }],
+      }), { status: 200 }),
+    });
+    const preserved = await preservingClient.rawChat({ messages: [] });
+    expect(JSON.stringify(preserved)).toContain(secret);
   });
 
   it("redacts a resolved Vault credential from HTTP and raw fetch errors", async () => {
@@ -812,6 +843,7 @@ describe("managed credentials and request-time resolution", () => {
       provider: "provider",
       model: "model",
       vault,
+      redactSuccessfulSecrets: false,
       fetchImpl: async () => {
         requestNumber++;
         if (requestNumber === 1) {

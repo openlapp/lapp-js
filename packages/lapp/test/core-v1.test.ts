@@ -7,12 +7,14 @@ import {
   ModelRefreshError,
   ProfileValidationError,
   TargetResolutionError,
+  computeProfileRevision,
   createLappClient,
   createProfile,
   inspectProfile,
   listModels,
   loadProfile,
   refreshModels,
+  readProfileStable,
   removeModel,
   removeProvider,
   resolveConnection,
@@ -119,6 +121,15 @@ describe("LAPP v1 profile", () => {
     expect(fs.existsSync(path.join(root, "manifest.json"))).toBe(false);
   });
 
+  it("returns the profile and revision from one public stable snapshot", async () => {
+    const root = temporaryRoot();
+    const value = profileAt(root);
+    await writeProfileAtomic(value);
+    const stable = readProfileStable({ path: root });
+    expect(stable.value).toEqual(value);
+    expect(stable.revision).toBe(computeProfileRevision(root));
+  });
+
   it("rejects JSONC and exposes redacted diagnostics through inspectProfile", () => {
     const root = temporaryRoot();
     fs.mkdirSync(path.join(root, "providers", "provider"), { recursive: true });
@@ -134,7 +145,10 @@ describe("LAPP v1 profile", () => {
     fs.mkdirSync(path.join(root, "providers", "orphan"), { recursive: true });
     expect(() => loadProfile({ path: root })).toThrow(ProfileValidationError);
     expect(inspectProfile({ path: root }).diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ location: "providers/orphan", message: "missing provider.json" }),
+      expect.objectContaining({
+        code: "MISSING_PROVIDER",
+        location: "providers/orphan/provider.json",
+      }),
     ]));
   });
 
@@ -149,7 +163,10 @@ describe("LAPP v1 profile", () => {
     );
     expect(() => loadProfile({ path: root })).toThrow(ProfileValidationError);
     expect(inspectProfile({ path: root }).diagnostics)
-      .toEqual(expect.arrayContaining([expect.objectContaining({ message: "missing models.json" })]));
+      .toEqual(expect.arrayContaining([expect.objectContaining({
+        code: "MISSING_MODELS",
+        location: "providers/provider/models.json",
+      })]));
   });
 
   it("refuses an in-memory traversal profile before creating an outside file", async () => {

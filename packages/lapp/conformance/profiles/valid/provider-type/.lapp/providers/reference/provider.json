@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "1.0",
+  "id": "reference",
+  "name": "Reference Provider",
+  "providerType": "reference-family",
+  "baseUrl": "https://example.com/v1",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "none" }
+}

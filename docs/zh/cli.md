@@ -24,6 +24,8 @@ lapp resolve [--path <path>] (--provider <id> --model <id> | --default <task>) [
 lapp presets [--json]
 lapp ping [--path <path>] [--provider <id> --model <id> | --default <task>] [--json]
 lapp chat [message...] [--path <path>] [--provider <id> --model <id> | --default <task>] [--system <prompt>] [--stream | --json]
+lapp lock inspect [--json]
+lapp lock repair --token <observed-token> --yes [--json]
 lapp help
 lapp version
 ```
@@ -85,6 +87,16 @@ lapp credential delete --provider openai --id secondary --yes
 
 dry-run 不提示输入，也不读写 Vault。CLI 不提供 credential get、export 或
 rebind 命令。
+
+## 全局写锁
+
+所有 CLI 变更在全部 Profile root 之间共用同一个当前用户写锁。
+`lapp lock inspect` 只读并返回经过验证的精确 owner token。
+`lapp lock repair` 是显式 operator 恢复命令：必须同时提供该 token 与 `--yes`，
+先重新读取并精确比较 ownership，再把锁原子 rename 到 repair 专用 sibling 并安全
+删除；它绝不会根据年龄、PID 或 heartbeat 推断锁已失效。缺失或畸形的
+`owner.json` 不能自动修复，返回
+`PROFILE_LOCK_INVALID`；无 token 的文件系统恢复属于协议外运维操作。
 
 ## 模型目录
 

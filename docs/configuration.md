@@ -169,11 +169,12 @@ an `extensions` object instead.
 
 ## Writes
 
-Low-level SDK management functions are immutable and do not touch disk.
-`upsertProviderWithCredential()` is the asynchronous high-level helper: raw
-secrets default to Vault storage, while plaintext requires an explicit storage
-choice and produces a warning. It returns an updated in-memory profile; call
-`writeProfileAtomic()` explicitly after reviewing `planChanges()`. Each changed
-file is validated, written to a same-directory temporary file, fsynced, and
-renamed. v1 assumes one writer at a time and does not provide profile-wide
-transactions or backups.
+SDK management functions are immutable and do not touch disk or the Vault.
+`prepareProviderUpdate()` applies the credential-storage policy: raw secrets
+default to a pending Vault write, while plaintext requires an explicit choice
+and produces a warning. Commit its `profile` and optional `vaultWrite` together
+with `commitProfileTransaction()`. That high-level operation acquires the
+current-user global lock, checks the expected revision before side effects, and
+rolls back the Vault when the profile commit fails. The multi-file update is a
+coordinated commit/rollback, not a filesystem-wide atomic transaction or backup.
+`writeProfileAtomic()` remains a low-level Profile-only primitive.

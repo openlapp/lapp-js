@@ -49,8 +49,8 @@
         "inputModalities": { "$ref": "#/$defs/stringSet" },
         "outputModalities": { "$ref": "#/$defs/stringSet" },
         "capabilities": { "$ref": "#/$defs/stringSet" },
-        "contextWindow": { "type": "integer", "minimum": 1 },
-        "maxOutputTokens": { "type": "integer", "minimum": 1 },
+        "contextWindow": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "maxOutputTokens": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
         "extensions": {
           "type": "object",
           "additionalProperties": true

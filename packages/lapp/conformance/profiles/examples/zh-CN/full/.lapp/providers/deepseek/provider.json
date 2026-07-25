@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0",
+  "id": "deepseek",
+  "name": "DeepSeek",
+  "enabled": true,
+  "baseUrl": "https://api.deepseek.com",
+  "protocols": ["openai-chat-completions"],
+  "auth": {
+    "type": "bearer",
+    "secret": "env://DEEPSEEK_API_KEY"
+  },
+  "modelDiscovery": {
+    "protocol": "openai-models",
+    "url": "https://api.deepseek.com/models"
+  }
+}

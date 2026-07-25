@@ -83,6 +83,17 @@ function writeJson(file: string, value: unknown): void {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+function filesUnder(directory: string, prefix = ""): string[] {
+  const files: string[] = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...filesUnder(absolute, relative));
+    else if (entry.isFile()) files.push(relative);
+  }
+  return files.sort();
+}
+
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "lapp-pack-smoke-"));
 let server: Server | undefined;
 let nativeInstallDir: string | undefined;
@@ -94,11 +105,24 @@ try {
   const tarballs = fs.readdirSync(temp).filter((name) => name.endsWith(".tgz"));
   const sdkTarball = tarballs.find((name) => name.startsWith("openlapp-lapp-"));
   const cliTarball = tarballs.find((name) => name.startsWith("openlapp-cli-"));
-  if (!sdkTarball || !cliTarball) throw new Error(`missing package tarball: ${tarballs.join(", ")}`);
+  if (!sdkTarball || !cliTarball) {
+    throw new Error(`missing package tarball: ${tarballs.join(", ")}`);
+  }
+
+  const sdkTarballPath = path.join(temp, sdkTarball);
+  const sdkTarballEntries = runSync("tar", ["-tzf", sdkTarballPath])
+    .split(/\r?\n/u)
+    .filter(Boolean);
+  const forbiddenCoreEntries = sdkTarballEntries.filter((entry) =>
+    /^(?:package\/)?(?:internal\/ui|react(?:\/|$)|vue(?:\/|$)|ui(?:\/|$)|dist\/(?:styles\.css|messages\.json|theme-tokens\.json))/iu
+      .test(entry));
+  if (forbiddenCoreEntries.length) {
+    throw new Error(`core SDK tarball contains UI artifacts: ${forbiddenCoreEntries.join(", ")}`);
+  }
 
   const installDir = path.join(temp, "consumer");
   fs.mkdirSync(installDir);
-  const sdkSpec = `file:${path.join(temp, sdkTarball).replace(/\\/g, "/")}`;
+  const sdkSpec = `file:${sdkTarballPath.replace(/\\/g, "/")}`;
   const cliSpec = `file:${path.join(temp, cliTarball).replace(/\\/g, "/")}`;
   fs.writeFileSync(
     path.join(installDir, "package.json"),
@@ -136,12 +160,24 @@ try {
     runPnpm(["install"], nativeInstallDir);
   }
 
-  runSync(process.execPath, ["--input-type=module", "-e", "const m=await import('@openlapp/lapp');if(typeof m.loadProfile!=='function')process.exit(1)"], installDir);
-  runSync(process.execPath, ["-e", "const m=require('@openlapp/lapp');if(typeof m.loadProfile!=='function')process.exit(1)"], installDir);
-
+  const requiredSdkExports = [
+    "loadProfile",
+    "createImageGenerationClient",
+    "createVideoGenerationClient",
+    "createSpeechSynthesisClient",
+    "createMusicGenerationClient",
+  ];
+  const exportAssertion = `const required=${JSON.stringify(requiredSdkExports)};if(required.some((name)=>typeof m[name]!=="function"))process.exit(1)`;
+  runSync(process.execPath, ["--input-type=module", "-e", `const m=await import('@openlapp/lapp');${exportAssertion}`], installDir);
+  runSync(process.execPath, ["-e", `const m=require('@openlapp/lapp');${exportAssertion}`], installDir);
   const sdkPackage = JSON.parse(
     fs.readFileSync(path.join(installDir, "node_modules", "@openlapp", "lapp", "package.json"), "utf8"),
-  ) as { version?: string };
+  ) as {
+    version?: string;
+    dependencies?: Record<string, string>;
+    peerDependencies?: Record<string, string>;
+    files?: string[];
+  };
   const cliPackage = JSON.parse(
     fs.readFileSync(path.join(installDir, "node_modules", "@openlapp", "cli", "package.json"), "utf8"),
   ) as { version?: string; dependencies?: Record<string, string>; bin?: Record<string, string> };
@@ -154,6 +190,14 @@ try {
   if (cliPackage.bin?.lapp !== "./dist/index.js") {
     throw new Error(`packed CLI has invalid bin mapping: ${cliPackage.bin?.lapp ?? "missing"}`);
   }
+  const coreUiDependencies = [
+    ...Object.keys(sdkPackage.dependencies ?? {}),
+    ...Object.keys(sdkPackage.peerDependencies ?? {}),
+  ].filter((name) => name === "react" || name === "vue" || name === "@openlapp/react" || name === "@openlapp/vue");
+  if (coreUiDependencies.length || sdkPackage.files?.some((entry) => /react|vue|internal[\\/]ui/iu.test(entry))) {
+    throw new Error(`packed core SDK exposes UI dependencies or files: ${coreUiDependencies.join(", ") || "files allowlist"}`);
+  }
+
   const expectedFiles = new Map([
     ["LICENSE", path.join(root, "LICENSE")],
     ["USER_AGREEMENT.en.md", path.join(root, "packages", "lapp", "USER_AGREEMENT.en.md")],
@@ -171,12 +215,23 @@ try {
       if (packed !== expected) throw new Error(`packed ${packageName} ${file} differs from canonical package copy`);
     }
   }
-  for (const file of ["global.schema.json", "models.schema.json", "provider.schema.json"]) {
+  for (const file of filesUnder(path.join(root, "packages", "lapp", "schema"))) {
     const expected = fs.readFileSync(path.join(root, "packages", "lapp", "schema", file));
     const packed = fs.readFileSync(
-      path.join(installDir, "node_modules", "@openlapp", "lapp", "schema", file),
+      path.join(installDir, "node_modules", "@openlapp", "lapp", "schema", ...file.split("/")),
     );
     if (!packed.equals(expected)) throw new Error(`packed SDK schema/${file} differs byte-for-byte`);
+  }
+  for (const file of filesUnder(path.join(root, "packages", "lapp", "conformance"))) {
+    const expected = fs.readFileSync(
+      path.join(root, "packages", "lapp", "conformance", ...file.split("/")),
+    );
+    const packed = fs.readFileSync(
+      path.join(installDir, "node_modules", "@openlapp", "lapp", "conformance", ...file.split("/")),
+    );
+    if (!packed.equals(expected)) {
+      throw new Error(`packed SDK conformance/${file} differs byte-for-byte`);
+    }
   }
 
   const requests: RecordedRequest[] = [];
@@ -259,10 +314,13 @@ try {
     process.platform === "win32" ? "lapp.CMD" : "lapp",
   );
   if (!fs.existsSync(platformBin)) throw new Error(`installed CLI shim is missing: ${platformBin}`);
+  const packStateHome = path.join(temp, "state");
   const runCli = (args: string[]) => runAsync(
     process.execPath,
     [pnpmEntrypoint, "exec", "lapp", ...args],
     installDir,
+    false,
+    { env: { LAPP_STATE_HOME: packStateHome } },
   );
 
   const versionOutput = requireSuccess(await runCli(["--version"]), "installed CLI version");
@@ -343,7 +401,7 @@ try {
       [pnpmEntrypoint, "exec", "lapp", ...args],
       nativeInstallDir!,
       false,
-      { input },
+      { input, env: { LAPP_STATE_HOME: path.join(temp, "native-state") } },
     );
 
     const firstSet = parseJson(await runNativeCli([
@@ -449,7 +507,7 @@ try {
     request.method === "POST" && header(request, "x-smoke-key") === "opaque-header-secret");
   if (headerChats.length !== 2) throw new Error("chat did not send header authentication");
 
-  console.log(`pack smoke passed (${process.platform}): ESM, CJS, real bin, fake upstream, auth, Vault, JSON channels, licenses, agreements, specs, schemas`);
+  console.log(`pack smoke passed (${process.platform}): core, CLI, ESM, CJS, core UI isolation, real bin, fake upstream, auth, Vault, JSON channels, licenses, agreements, specs, schemas, conformance fixtures`);
 } finally {
   if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
   if (nativeInstallDir && nativeVaultRef) {

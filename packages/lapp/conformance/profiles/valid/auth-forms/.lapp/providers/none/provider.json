@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "none",
+  "baseUrl": "http://127.0.0.1:11434/v1",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "none" }
+}

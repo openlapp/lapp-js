@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { parseSecretRef, parseVaultSecretRef } from "../secret/index.js";
+import { inspectIJsonValue } from "../json/ijson.js";
+import { providerDirectory } from "../profile-location.js";
 import type {
   Diagnostic,
   LappProfile,
@@ -69,16 +71,37 @@ function schemaDiagnostics(
   value: unknown,
   location: string,
   diagnostics: Diagnostic[],
-): void {
+): boolean {
   const validate = getValidators()[name];
-  if (validate(value)) return;
+  if (validate(value)) return true;
   for (const error of (validate.errors ?? []) as ErrorObject[]) {
+    let pointer = error.instancePath || "";
+    const propertyName = error.propertyName
+      ?? (error.params as { propertyName?: string }).propertyName;
+    const missingProperty = (error.params as { missingProperty?: string }).missingProperty;
+    const additionalProperty = (error.params as { additionalProperty?: string }).additionalProperty;
+    if (propertyName) pointer = pointerJoin(pointer, propertyName);
+    else if (error.keyword === "required" && missingProperty) {
+      pointer = pointerJoin(pointer, missingProperty);
+    } else if (error.keyword === "additionalProperties" && additionalProperty) {
+      pointer = pointerJoin(pointer, additionalProperty);
+    }
     diagnostics.push({
       level: "ERROR",
-      location: `${location}${error.instancePath}`,
+      code: `SCHEMA_${name.toUpperCase()}`,
+      location: pointer ? `${location}#${pointer}` : location,
       message: `${name}.json schema: ${error.message ?? "invalid"}`,
     });
   }
+  return false;
+}
+
+function escapePointerSegment(value: string): string {
+  return value.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function pointerJoin(pointer: string, segment: string | number): string {
+  return `${pointer}/${escapePointerSegment(String(segment))}`;
 }
 
 function checkedUrl(
@@ -90,24 +113,29 @@ function checkedUrl(
   try {
     url = new URL(value);
   } catch {
-    diagnostics.push({ level: "ERROR", location, message: "URL is invalid" });
+    diagnostics.push({ level: "ERROR", code: "INVALID_URL", location, message: "URL is invalid" });
     return undefined;
   }
-  if (url.username || url.password) {
-    diagnostics.push({ level: "ERROR", location, message: "URL must not contain credentials" });
+  const authority = value.match(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/)?.[1];
+  if (url.username || url.password || authority?.includes("@")) {
+    diagnostics.push({ level: "ERROR", code: "URL_CREDENTIALS", location, message: "URL must not contain credentials" });
   }
-  if (url.hash) {
-    diagnostics.push({ level: "ERROR", location, message: "URL must not contain a fragment" });
+  if (value.includes("#")) {
+    diagnostics.push({ level: "ERROR", code: "URL_FRAGMENT", location, message: "URL must not contain a fragment" });
   }
   if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHostname(url.hostname))) {
-    diagnostics.push({ level: "ERROR", location, message: "remote URLs must use HTTPS" });
+    diagnostics.push({ level: "ERROR", code: "INSECURE_URL", location, message: "remote URLs must use HTTPS" });
   }
   return url;
 }
 
 function validateSecret(provider: LappProvider, location: string, diagnostics: Diagnostic[]): void {
-  if (provider.config.auth.type === "none") return;
-  const ref = parseSecretRef(provider.config.auth.secret);
+  const auth = provider.config.auth as unknown;
+  if (!auth || typeof auth !== "object" || !("type" in auth)) return;
+  if ((auth as { type?: unknown }).type === "none") return;
+  const secret = (auth as { secret?: unknown }).secret;
+  if (typeof secret !== "string") return;
+  const ref = parseSecretRef(secret);
   if (ref.scheme === "plaintext") {
     diagnostics.push({
       level: "WARN",
@@ -126,7 +154,7 @@ function validateSecret(provider: LappProvider, location: string, diagnostics: D
     }
   } else if (ref.scheme === "vault") {
     try {
-      const vault = parseVaultSecretRef(provider.config.auth.secret);
+      const vault = parseVaultSecretRef(secret);
       if (vault.providerId !== provider.config.id) {
         diagnostics.push({
           level: "ERROR",
@@ -156,12 +184,14 @@ function validateSecret(provider: LappProvider, location: string, diagnostics: D
 function validateHeaders(provider: LappProvider, location: string, diagnostics: Diagnostic[]): void {
   const seen = new Map<string, string>();
   for (const [name, value] of Object.entries(provider.config.requestHeaders ?? {})) {
+    const headerLocation = `${location}/${escapePointerSegment(name)}`;
     const lower = name.toLowerCase();
     const previous = seen.get(lower);
     if (previous) {
       diagnostics.push({
         level: "ERROR",
-        location,
+        code: "DUPLICATE_REQUEST_HEADER",
+        location: headerLocation,
         message: `requestHeaders contains case-insensitive duplicates "${previous}" and "${name}"`,
       });
     } else {
@@ -170,12 +200,18 @@ function validateHeaders(provider: LappProvider, location: string, diagnostics: 
     if (isSensitiveHeaderName(name)) {
       diagnostics.push({
         level: "ERROR",
-        location,
+        code: "SENSITIVE_REQUEST_HEADER",
+        location: headerLocation,
         message: `requestHeaders must not contain sensitive header "${name}"`,
       });
     }
     if (/[\r\n]/.test(value)) {
-      diagnostics.push({ level: "ERROR", location, message: `header "${name}" contains CR/LF` });
+      diagnostics.push({
+        level: "ERROR",
+        code: "INVALID_REQUEST_HEADER_VALUE",
+        location: headerLocation,
+        message: `header "${name}" contains CR/LF`,
+      });
     }
   }
   if (provider.config.auth.type === "header") {
@@ -185,7 +221,8 @@ function validateHeaders(provider: LappProvider, location: string, diagnostics: 
     if (conflict) {
       diagnostics.push({
         level: "ERROR",
-        location,
+        code: "DUPLICATE_AUTH_HEADER",
+        location: `${location}/${escapePointerSegment(conflict)}`,
         message: `requestHeaders must not duplicate authentication header "${conflict}"`,
       });
     }
@@ -197,83 +234,114 @@ function nonJsonLocation(
   location = "$",
   ancestors = new WeakSet<object>(),
 ): string | undefined {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return undefined;
-  if (typeof value === "number") return Number.isFinite(value) ? undefined : location;
+  if (
+    value === null
+    || typeof value === "string"
+    || typeof value === "boolean"
+    || typeof value === "number"
+  ) return undefined;
   if (typeof value !== "object") return location;
   if (ancestors.has(value)) return location;
   const prototype = Object.getPrototypeOf(value);
   if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return location;
+  if (Object.getOwnPropertySymbols(value).length > 0) return location;
   ancestors.add(value);
-  const entries = Array.isArray(value)
-    ? value.map((entry, index) => [String(index), entry] as const)
-    : Object.entries(value as Record<string, unknown>);
-  for (const [key, entry] of entries) {
-    const invalid = nonJsonLocation(entry, `${location}.${key}`, ancestors);
-    if (invalid) return invalid;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      if (!(index in value)) return `${location}.${index}`;
+      const invalid = nonJsonLocation(value[index], `${location}.${index}`, ancestors);
+      if (invalid) return invalid;
+    }
+  } else {
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      const invalid = nonJsonLocation(entry, `${location}.${key}`, ancestors);
+      if (invalid) return invalid;
+    }
   }
   ancestors.delete(value);
   return undefined;
 }
 
+function profileIJsonLocation(profile: LappProfile, pointer: string): string {
+  const global = pointer.match(/^\/global(\/.*)?$/);
+  if (global) return global[1] ? `global.json#${global[1]}` : "global.json";
+
+  const provider = pointer.match(/^\/providers\/([0-9]+)\/(config|models)(\/.*)?$/);
+  if (provider) {
+    const index = Number(provider[1]);
+    const id = profile.providers[index]?.config?.id;
+    const directory = typeof id === "string" && isValidProviderId(id) ? id : `provider-${index}`;
+    const file = provider[2] === "config" ? "provider.json" : "models.json";
+    return `providers/${directory}/${file}${provider[3] ? `#${provider[3]}` : ""}`;
+  }
+  return pointer ? `#${pointer}` : ".";
+}
+
 function validateProvider(provider: LappProvider, diagnostics: Diagnostic[]): void {
   const id = provider.config.id;
-  const location = `providers/${id}/provider.json`;
-  schemaDiagnostics("provider", provider.config, location, diagnostics);
-  if (!isValidProviderId(id)) {
-    diagnostics.push({ level: "ERROR", location, message: `invalid provider id "${id}"` });
+  const directory = providerDirectory(provider);
+  const location = `providers/${directory}/provider.json`;
+  const schemaValid = schemaDiagnostics("provider", provider.config, location, diagnostics);
+  if (provider.config.auth && typeof provider.config.auth === "object") {
+    validateSecret(provider, `${location}#/auth/secret`, diagnostics);
   }
-  const baseUrl = checkedUrl(provider.config.baseUrl, `${location}#baseUrl`, diagnostics);
+  if (!schemaValid) return;
+  if (!isValidProviderId(id)) {
+    diagnostics.push({
+      level: "ERROR",
+      code: "INVALID_PROVIDER_ID",
+      location: `${location}#/id`,
+      message: `invalid provider id "${id}"`,
+    });
+  }
+  const baseUrl = checkedUrl(provider.config.baseUrl, `${location}#/baseUrl`, diagnostics);
   if (provider.config.modelDiscovery) {
     const discoveryUrl = checkedUrl(
       provider.config.modelDiscovery.url,
-      `${location}#modelDiscovery.url`,
+      `${location}#/modelDiscovery/url`,
       diagnostics,
     );
     if (baseUrl && discoveryUrl && baseUrl.origin !== discoveryUrl.origin) {
       diagnostics.push({
         level: "ERROR",
-        location: `${location}#modelDiscovery.url`,
+        code: "CROSS_ORIGIN_DISCOVERY",
+        location: `${location}#/modelDiscovery/url`,
         message: "modelDiscovery.url must have the same origin as baseUrl",
       });
     }
   }
-  validateSecret(provider, `${location}#auth.secret`, diagnostics);
-  validateHeaders(provider, `${location}#requestHeaders`, diagnostics);
+  validateHeaders(provider, `${location}#/requestHeaders`, diagnostics);
 
-  const modelsLocation = `providers/${id}/models.json`;
-  schemaDiagnostics("models", provider.models, modelsLocation, diagnostics);
+  const modelsLocation = `providers/${directory}/models.json`;
+  if (!schemaDiagnostics("models", provider.models, modelsLocation, diagnostics)) return;
   const providerProtocols = new Set(provider.config.protocols);
   const owners = new Map<string, string>();
-  for (const model of provider.models.models) {
-    const modelLocation = `${modelsLocation}#${model.id}`;
-    const previous = owners.get(model.id);
-    if (previous) {
-      diagnostics.push({ level: "ERROR", location: modelLocation, message: `duplicate model id "${model.id}"` });
-    } else {
-      owners.set(model.id, model.id);
-    }
-    for (const protocol of model.protocols ?? []) {
-      if (!providerProtocols.has(protocol)) {
-        diagnostics.push({
-          level: "ERROR",
-          location: modelLocation,
-          message: `model protocol "${protocol}" is not declared by provider`,
-        });
-      }
-    }
-  }
-  for (const model of provider.models.models) {
-    const modelLocation = `${modelsLocation}#${model.id}`;
-    for (const alias of model.aliases ?? []) {
-      const previous = owners.get(alias);
+  for (const [modelIndex, model] of provider.models.models.entries()) {
+    const modelLocation = `${modelsLocation}#/models/${modelIndex}`;
+    const identities = [model.id, ...(model.aliases ?? [])];
+    for (const [identityIndex, identity] of identities.entries()) {
+      const previous = owners.get(identity);
       if (previous) {
         diagnostics.push({
           level: "ERROR",
-          location: modelLocation,
-          message: `model id or alias "${alias}" is already owned by "${previous}"`,
+          code: "DUPLICATE_MODEL_IDENTITY",
+          location: identityIndex === 0
+            ? `${modelLocation}/id`
+            : `${modelLocation}/aliases/${identityIndex - 1}`,
+          message: `model id or alias "${identity}" is already owned by "${previous}"`,
         });
       } else {
-        owners.set(alias, model.id);
+        owners.set(identity, model.id);
+      }
+    }
+    for (const [protocolIndex, protocol] of (model.protocols ?? []).entries()) {
+      if (!providerProtocols.has(protocol)) {
+        diagnostics.push({
+          level: "ERROR",
+          code: "MODEL_PROTOCOL_NOT_DECLARED",
+          location: `${modelLocation}/protocols/${protocolIndex}`,
+          message: `model protocol "${protocol}" is not declared by provider`,
+        });
       }
     }
   }
@@ -281,23 +349,42 @@ function validateProvider(provider: LappProvider, diagnostics: Diagnostic[]): vo
 
 function validateGlobal(profile: LappProfile, diagnostics: Diagnostic[]): void {
   if (!profile.global) return;
-  schemaDiagnostics("global", profile.global, "global.json", diagnostics);
+  if (!schemaDiagnostics("global", profile.global, "global.json", diagnostics)) return;
   for (const [task, ref] of Object.entries(profile.global.defaults)) {
-    const location = `global.json#defaults.${task}`;
+    const location = `global.json#/defaults/${escapePointerSegment(task)}`;
     const provider = profile.providers.find((entry) => entry.config.id === ref.providerId);
     if (!provider) {
-      diagnostics.push({ level: "ERROR", location, message: `provider "${ref.providerId}" does not exist` });
+      diagnostics.push({
+        level: "ERROR",
+        code: "DEFAULT_PROVIDER_NOT_FOUND",
+        location: `${location}/providerId`,
+        message: `provider "${ref.providerId}" does not exist`,
+      });
       continue;
     }
     if (provider.config.enabled === false) {
-      diagnostics.push({ level: "ERROR", location, message: `provider "${ref.providerId}" is disabled` });
-      continue;
+      diagnostics.push({
+        level: "ERROR",
+        code: "DEFAULT_PROVIDER_DISABLED",
+        location: `${location}/providerId`,
+        message: `provider "${ref.providerId}" is disabled`,
+      });
     }
     const model = provider.models.models.find((entry) => entry.id === ref.modelId);
     if (!model) {
-      diagnostics.push({ level: "ERROR", location, message: `model "${ref.modelId}" does not exist` });
+      diagnostics.push({
+        level: "ERROR",
+        code: "DEFAULT_MODEL_NOT_FOUND",
+        location: `${location}/modelId`,
+        message: `model "${ref.modelId}" does not exist`,
+      });
     } else if (model.enabled === false) {
-      diagnostics.push({ level: "ERROR", location, message: `model "${ref.modelId}" is disabled` });
+      diagnostics.push({
+        level: "ERROR",
+        code: "DEFAULT_MODEL_DISABLED",
+        location: `${location}/modelId`,
+        message: `model "${ref.modelId}" is disabled`,
+      });
     }
   }
 }
@@ -308,15 +395,25 @@ export function validateProfile(profile: LappProfile): ValidationResult {
   if (invalidJson) {
     diagnostics.push({
       level: "ERROR",
+      code: "IJSON_NON_JSON_VALUE",
       location: invalidJson,
       message: "profile contains a value that cannot be represented in JSON",
     });
   } else try {
+    for (const finding of inspectIJsonValue(profile)) {
+      diagnostics.push({
+        level: "ERROR",
+        code: finding.code,
+        location: profileIJsonLocation(profile, finding.pointer),
+        message: finding.message,
+      });
+    }
     const seenProviders = new Set<string>();
     for (const provider of profile.providers) {
       if (seenProviders.has(provider.config.id)) {
         diagnostics.push({
           level: "ERROR",
+          code: "DUPLICATE_PROVIDER_ID",
           location: `providers/${provider.config.id}`,
           message: `duplicate provider id "${provider.config.id}"`,
         });
@@ -325,15 +422,13 @@ export function validateProfile(profile: LappProfile): ValidationResult {
       validateProvider(provider, diagnostics);
     }
     validateGlobal(profile, diagnostics);
-  } catch (error) {
+  } catch {
     diagnostics.push({
       level: "ERROR",
+      code: "VALIDATION_UNAVAILABLE",
       location: ".",
-      message: `profile validation unavailable: ${(error as Error).message}`,
+      message: "profile validation unavailable",
     });
-  }
-  if (profile.providers.length === 0) {
-    diagnostics.push({ level: "WARN", location: "providers", message: "no providers loaded" });
   }
   const rank: Record<Diagnostic["level"], number> = { ERROR: 0, WARN: 1, INFO: 2 };
   diagnostics.sort((a, b) => rank[a.level] - rank[b.level]);

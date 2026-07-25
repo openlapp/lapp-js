@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    { "id": "deepseek-chat", "enabled": true }
+  ]
+}

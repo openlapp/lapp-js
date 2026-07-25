@@ -3,10 +3,11 @@
 LAPP 让 AI 应用共享一个本地 Provider 与模型 Registry。应用仍然直接向选中的
 上游 API 发送请求。
 
-选择最适合应用的最小接入方式：
+官方推荐应用通过 SDK 接入，从而无需自行复刻凭据与并发规则；直接实现协议和
+CLI 仍然是开放、合规的路径：
 
-1. 直接读取 JSON Profile，自行实现 LAPP 规则。
-2. 在 TypeScript 中使用 `@openlapp/lapp`。
+1. 在 TypeScript 中使用 `@openlapp/lapp`。
+2. 直接读取 JSON Profile，自行实现 LAPP 规则。
 3. 调用 `lapp`，消费稳定的 JSON 输出。
 
 ## 安装

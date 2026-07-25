@@ -63,6 +63,20 @@ CLI 不提供 get 或 export；原始凭据只能通过无回显终端输入或 
 Provider 错误文本在进入 CLI 诊断前会清理常见凭据形状。这只是纵深防御，不能
 代替“不记录请求头和解析后连接”的基本规则。
 
+SDK 的成功响应对象与 stream event 默认也会脱敏本次请求解析出的凭据。
+`redactSuccessfulSecrets: false` 只允许成功响应显式退出脱敏；错误和诊断仍然
+始终脱敏。
+
+## 桌面 Manager
+
+目前还没有稳定、受支持的 GUI 正式版。原 React/Vue 包继续保持移除，Electron 示例
+只是已过时的历史原型。当前 Tauri Manager Alpha 实现及其信任边界合同位于
+[`openlapp/lapp-manager`](https://github.com/openlapp/lapp-manager)。
+
+Renderer 永远不是可信安全边界。Manager 把文件系统、Vault 和网络权限留在
+Rust backend，只暴露窄命令。不得提供凭据 get、resolve、export、rebind、通用 IPC、
+任意文件系统访问或任意网络 primitive。
+
 ## 地址绑定
 
 Vault envelope 绑定 Provider ID、标准化 origin 与认证 type/name。Header 名称转为
@@ -89,6 +103,29 @@ LAPP 不会创建明文或加密文件回退。
 Vault 记录不属于 `LAPP_HOME` 备份，LAPP 也不会同步它。OS 账户、系统凭据库或设备
 重置可能使记录不可用。应在上游 Provider 保留独立恢复方式，例如轮换或新建 API
 key。
+
+所有官方高层 Profile + Vault 变更都持有当前用户全局写锁
+`<LAPP_STATE_HOME>/locks/writer-v1.lock`。Vault 记录跨 `LAPP_HOME` 共享，因此
+写锁也必须跨 root 共享。正常 writer 最多等待 5000 ms 后返回 `PROFILE_LOCKED`；
+永远不会按年龄、owner PID 或 heartbeat 偷锁。修复是独立且危险的 operator 操作，
+必须重新核对 `lapp lock inspect` 返回的精确 token。owner 记录缺失或畸形时返回
+`PROFILE_LOCK_INVALID`，不能通过 token-checked 协议操作修复。稳定读取只有在期间
+没有 writer 介入且前后确定性 revision 相同时才接受 snapshot。
+
+每个官方 Profile-only、Vault-only 或组合变更都必须提供预期 revision。底层
+Profile transaction 使用 canonical Profile revision，在取得锁后检查一次，并在
+第一次副作用前再次检查。Node Manager Host 则暴露独立的 opaque revision，其中还
+包含 `<LAPP_STATE_HOME>` 下由 Manager 维护的 Vault generation；Vault-only 变更会在
+持有全局写锁时推进它，因此旧 Manager snapshot 不能静默覆盖较新的凭据。
+
+删除 Provider 只移除 Profile 配置，绝不会自动删除当前用户的 Vault 凭据，因为其他
+LAPP root 或应用仍可能引用同一个 `vault://<providerId>/<credentialId>`。删除共享
+凭据存储是另一项必须显式执行的 `credential delete` 操作。如果两者都要清理，应先删除
+凭据，再删除 Provider 配置。
+
+将 Provider 从 Vault 引用切换为 `env://` 或 plaintext，也只会改变 Profile 引用，
+旧的共享 Vault 记录仍会保留。如果需要清理，必须在切换存储方式前显式执行
+`credential delete`。
 
 ## 文件安全
 

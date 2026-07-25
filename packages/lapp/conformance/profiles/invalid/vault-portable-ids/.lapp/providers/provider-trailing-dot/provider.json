@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "provider-trailing-dot",
+  "baseUrl": "https://provider-trailing-dot.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault://other./default" }
+}

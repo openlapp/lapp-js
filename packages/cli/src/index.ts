@@ -13,6 +13,7 @@ import {
   commandValidate,
 } from "./commands/profile.js";
 import { commandCredential } from "./commands/credential.js";
+import { commandLock } from "./commands/lock.js";
 import { commandChat, commandPing, commandResolve } from "./commands/runtime.js";
 import { classifyError, printJsonError } from "./output.js";
 
@@ -39,6 +40,8 @@ export function usage(): string {
   lapp presets [--json]
   lapp ping [--path <path>] [--provider <id> --model <id> | --default <task>] [--json]
   lapp chat [message...] [--path <path>] [--provider <id> --model <id> | --default <task>] [--system <prompt>] [--stream | --json]
+  lapp lock inspect [--json]
+  lapp lock repair --token <observed-token> --yes [--json]
   lapp help
   lapp version`;
 }
@@ -69,6 +72,7 @@ export async function main(rawArgv: string[] = process.argv.slice(2)): Promise<n
       case "presets": await commandPresets(argv); break;
       case "ping": await commandPing(argv); break;
       case "chat": await commandChat(argv); break;
+      case "lock": await commandLock(argv); break;
       case "help":
         if (argv.length) throw new UsageError("help takes no arguments");
         console.log(usage());
@@ -115,3 +119,4 @@ export * from "./presets.js";
 export * from "./commands/profile.js";
 export * from "./commands/credential.js";
 export * from "./commands/runtime.js";
+export * from "./commands/lock.js";

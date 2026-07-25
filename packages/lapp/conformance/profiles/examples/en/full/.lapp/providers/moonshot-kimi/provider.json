@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "id": "moonshot-kimi",
+  "name": "Kimi Open Platform",
+  "enabled": true,
+  "baseUrl": "https://api.moonshot.cn/v1",
+  "protocols": ["openai-chat-completions"],
+  "auth": {
+    "type": "bearer",
+    "secret": "env://MOONSHOT_API_KEY"
+  },
+  "requestHeaders": {
+    "User-Agent": "LAPPExample/1.0 (+https://example.com/contact)"
+  }
+}

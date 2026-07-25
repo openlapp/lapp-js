@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0",
+  "id": "example",
+  "baseUrl": "http://api.example.com/v1",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "file://key.txt" },
+  "requestHeaders": { "X-Api-Key": "secret" }
+}

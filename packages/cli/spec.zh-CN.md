@@ -20,12 +20,31 @@ LAPP 是文件约定，不定义 daemon、gateway、proxy、路由服务、计�
 - `providers/` 中每个目录代表一个 provider。
 - 每个 provider 目录同时包含 `provider.json` 和 `models.json`。
 - `global.json` 可选。
-- LAPP v1 文件只能是 UTF-8 标准 JSON，不支持 JSONC 或其他扩展名。
+- LAPP v1 文件只能是 UTF-8 编码的 I-JSON，不支持 JSONC 或其他扩展名。
 - `manifest.json` 在 LAPP v1 中没有语义。
 
 三种文档都必须包含 `"schemaVersion": "1.0"`。实现必须拒绝不支持的版本。核心对象不接受未知字段；实现自定义数据只能放入 `extensions`。
 
-[`schema/`](./schema/) 定义文件形状。下文补充 JSON Schema 无法表达的跨文件与安全约束。
+每个 object 的 member name 经 JSON escape 解析后必须唯一。字符串只能包含
+Unicode scalar value。数字必须是有限的 IEEE 754 binary64 值；所有整数都必须位于
+`-9007199254740991` 到 `9007199254740991`（含端点）的互操作范围。规则递归适用于
+`extensions`。静默保留重复 key 中某一个值，或静默舍入 unsafe integer 的解析器不合规。
+
+[`schema/`](https://github.com/openlapp/lapp/tree/main/schema/) 定义文件形状。下文补充 JSON Schema 无法表达的跨文件与安全约束。
+
+## 当前用户状态目录
+
+`LAPP_HOME` 选择 Profile 数据；`LAPP_STATE_HOME` 选择当前用户的协调状态，两者彼此
+独立。显式设置 `LAPP_STATE_HOME` 时，它就是完整状态路径；否则默认值为：
+
+- Windows：`%LOCALAPPDATA%\OpenLAPP`；
+- macOS：`~/Library/Application Support/OpenLAPP`；
+- Linux：`$XDG_STATE_HOME/openlapp`；未设置 `XDG_STATE_HOME` 时使用
+  `~/.local/state/openlapp`。
+
+实现不得从 `LAPP_HOME`、工作目录或仓库 checkout 推导该路径。平台支持时，状态目录
+应限制为当前 OS 用户访问。规范 writer lock 固定为
+`<LAPP_STATE_HOME>/locks/writer-v1.lock`，owner record 为其中的 `owner.json`。
 
 ## 标识符
 
@@ -64,6 +83,10 @@ Model ID 是发送给上游的原始字符串，可以包含 `/`，但不能是�
 
 - `schemaVersion`、`id`、`baseUrl`、`protocols` 和 `auth` 必填。
 - `name` 是可选显示名称。
+- `providerType` 是可选、不透明的 provider family 元数据。存在时必须匹配
+  `^[a-z0-9][a-z0-9._-]{0,63}$`。它使用开放词汇：本规范不保留任何供应商名称、不赋予
+  adapter 行为，实现也不得根据 `id`、`baseUrl` 或 model ID 猜测该值。LAPP 1.0 的执行与
+  protocol 选择 MUST NOT 查询或使用 `providerType`。
 - `enabled` 缺省为 `true`。
 - `baseUrl` 是上游 API 基础地址。OpenAI-compatible 实现不得猜测或插入版本路径；协议明确定义的 endpoint 路径仍需应用。
 - `protocols` 是非空、有序协议 ID 列表。
@@ -73,23 +96,64 @@ Model ID 是发送给上游的原始字符串，可以包含 `/`，但不能是�
 
 ### 协议选择
 
-核心对话协议 ID 为：
+核心上游协议 ID 为：
 
 - `openai-chat-completions`
 - `openai-responses`
 - `anthropic-messages`
+- `openai-images`
+- `openai-audio-speech`
+
+这些 ID 的 canonical request 与 response mapping 由
+[`sdk-v1`](https://github.com/openlapp/lapp/tree/main/tools/validator/fixtures/conformance/sdk-v1/) conformance fixtures 固定。
+其中三个对话 fixture 还固定 SSE 与 tool-call mapping。
 
 可以保存其他符合语法的 ID。实现无法执行时必须返回 unsupported-protocol 错误，不能静默改成另一种协议。
 
 协议顺序就是偏好顺序。应用声明支持协议集合后，选择模型候选中第一个属于该集合的协议；应用未传支持集合时选择第一个候选。模型存在 `model.protocols` 时以它为候选，否则继承 `provider.protocols`。
 
+#### `openai-images`
+
+该协议把 `image-generation` operation 映射为 `baseUrl` 下
+`images/generations` 的 JSON `POST`。选中的模型固定写入 `model`；typed input 的
+`prompt`、`count`、`size`、`outputFormat` 分别映射到 `prompt`、`n`、`size`、
+`output_format`。typed `size` 是含整数 `width` 和 `height` 的 object；wire `size`
+是 `<width>x<height>` 字符串。未提供的可选输入字段不得自行补值。
+
+Response `data` 中含 `b64_json` 的项目归一化为 inline `image` artifact；media type
+优先使用 response 的 `output_format`，缺省时使用请求的 output format。含 `url` 的项目
+归一化为 URL artifact，归一化过程中不得隐式下载。图片编辑、variation、partial-image
+event 和 streaming 不属于该 v1 protocol ID。
+
+#### `openai-audio-speech`
+
+该协议把 `text-to-speech` operation 映射为 `baseUrl` 下 `audio/speech` 的 JSON
+`POST`。选中的模型固定写入 `model`；typed input 的 `text`、`voice`、
+`outputFormat`、`speed` 分别映射到 `input`、`voice`、`response_format`、`speed`。
+未提供的可选输入字段不得自行补值。
+
+成功 response body 是音频字节，归一化为一个 inline `audio` artifact。media type
+优先使用合法的 response `Content-Type`，缺省时按请求 output format 对应的 registered media
+type 确定。SSE speech event 不属于该 v1 protocol ID；实现可以增量读取普通 audio
+body，但最终仍归一化为同一个 artifact。
+
 ### URL
 
-`baseUrl` 和 `modelDiscovery.url` 必须是绝对 URL，不能带用户名、密码或 fragment。远端 URL 必须使用 HTTPS；只有 loopback 主机（`localhost`、`127.0.0.0/8` 和 `::1`）可以使用 HTTP。
+`baseUrl` 和 `modelDiscovery.url` 必须是绝对 HTTP(S) URL，不能带用户名、密码或
+fragment。远端 URL 必须使用 HTTPS；只有 loopback 主机（`localhost`、
+`127.0.0.0/8` 和 `::1`）可以使用 HTTP。
+
+Origin 比较和 Vault 绑定必须使用标准序列化 URL origin：scheme 小写；host 使用 URL
+Standard/IDNA ASCII 序列化；IPv6 必要时带方括号；HTTP 的 `80` 和 HTTPS 的 `443`
+默认端口省略；非默认端口显式保留。Path、query 与 fragment 不属于 origin。例如
+`https://EXAMPLE.com:443/v1?x=1` 的 origin 是 `https://example.com`。Opaque 或
+`null` origin 非法。只有序列化 origin 的字节完全相同才算同源。
 
 协议在 `baseUrl` 下定义 endpoint 时，实现必须把它追加到 URL pathname，而不是拼接到序列化 URL 字符串，并保留已配置的 query 参数。
 
-存在 `modelDiscovery` 时，其 URL 必须与 `baseUrl` 同源。带认证的请求必须使用 `redirect: error` 或等价行为，凭据绝不能跟随重定向。
+存在 `modelDiscovery` 时，其 URL 必须与 `baseUrl` 的 canonical origin 相同。带认证
+的请求必须使用 `redirect: error` 或等价行为，凭据绝不能跟随重定向。Path 或 query
+不同不会改变 origin，但实现仍必须精确请求配置的 URL。
 
 ### 认证
 
@@ -183,6 +247,17 @@ HTTP header 名必须是合法 token，值不能含 CR 或 LF。`requestHeaders`
 
 模型只有 `id` 必填，`enabled` 缺省为 `true`。`name`、`aliases`、`type`、模态、能力、正整数 token 限制和 `extensions` 都是本地描述数据。
 
+下列值是 well-known 互操作词汇，而不是封闭 enum：
+
+- operation：`chat`、`embedding`、`image-generation`、`video-generation`、
+  `text-to-speech`、`music-generation`；
+- 输入/输出模态：`text`、`image`、`audio`、`video`；
+- capability：上述 operation 名，以及 `stream`、`tool-call` 和 `reasoning`。
+
+未知的非空白值仍然合法并且必须保留。音乐和歌曲使用 `audio` 输出模态与
+`music-generation` capability；TTS 使用相同输出模态与 `text-to-speech`
+capability。`type` 始终是不透明描述数据，不是路由 key。
+
 存在 `protocols` 时，它必须是 provider protocols 的非空子集；缺省时继承 provider 的有序 protocols。
 
 `models.json` 是本地权威模型目录。远端返回值只是发现输入，不是第二套事实源。应用不得根据模型名称猜测能力。
@@ -201,7 +276,8 @@ HTTP header 名必须是合法 token，值不能含 CR 或 LF。`requestHeaders`
 }
 ```
 
-`defaults` 把操作名映射到 canonical provider 和 model ID。操作名是 `chat`、`embedding`、`text-to-speech` 之类的小写标识符。
+`defaults` 把操作名映射到 canonical provider 和 model ID。操作名是小写标识符；
+well-known 名称见上文 `models.json` 一节，其他语法合法的操作名仍然允许。
 
 默认值必须用 canonical ID 引用现有且启用的 provider 和 model，不能把 alias 写入 `global.json`。没有 `global.json` 的 profile 仍然合法。
 
@@ -220,8 +296,158 @@ HTTP header 名必须是合法 token，值不能含 CR 或 LF。`requestHeaders`
 
 读取模型列表不得解析 secret 或访问网络。只有连接解析和显式刷新需要凭据。
 
-## 校验与写入
+## 校验与诊断
 
-实现必须先用对应版本的 Schema 校验每个文件，再执行语义规则。每次写入和删除前，都必须解析目标绝对路径，并证明它仍在选定的 LAPP 根目录内。更新文件应在同目录写临时文件，再原子 rename。
+实现必须依次执行 I-JSON、版本 Schema 与语义校验。未知、畸形或不受支持的 v1 数据
+必须拒绝；LAPP 1.0 不为早期 draft 提供 compatibility 或 migration layer。已存在的
+managed document path 如果不是 regular file（包括 symlink 或 directory），必须以
+`NON_REGULAR_FILE` 拒绝。
 
-LAPP v1 假定同一时间只有一个写入者，不定义锁、profile 级事务、合并行为或旧 draft 迁移。Vault 写入与 profile 文件写入是两个独立操作；组合执行它们的工具在 profile 写入失败时应恢复 Vault 原值，如果恢复也失败，必须返回明确的 partial-failure 错误。
+合规 diagnostic 只由 `(level, code, location)` 标识：
+
+- `level` 为 `ERROR` 或 `WARN`；
+- `code` 是稳定的全大写 ASCII 下划线标识符；
+- `location` 是相对所选 LAPP root 的 POSIX path，可选追加 `#` 与 RFC 6901 JSON
+  Pointer。
+
+Location 不能是绝对路径、不能以 `./` 开头、不能含反斜杠。文件级诊断只使用路径；
+member 诊断必须使用解码后的精确 member path，并将 `~` 转义为 `~0`、`/` 转义为
+`~1`，例如 `providers/deepseek/provider.json#/auth/secret`。Message 可以本地化，
+输出顺序也可以不同；二者都不参与合规身份。任何诊断字段都不得出现 secret、Vault
+envelope 或未脱敏 native error。
+
+## Profile revision
+
+Profile revision 是根据 managed bytes 与相关文件状态计算的不透明 CAS 值。文本格式为
+`sha256:` 后接 64 个小写十六进制字符，调用方只能比较是否相等。
+
+SHA-256 输入以 ASCII 字节 `lapp-profile-revision-v1` 和一个 NUL 字节开头，之后是
+四字节无符号大端 record 数量，再接下述 records。
+
+Record set 始终包含 `global.json` 与 `providers`。当 `providers` 是目录时，还包含它
+每个 direct child directory 的 structure record；每个该 provider directory 另包含
+`providers/<name>/provider.json` 与 `providers/<name>/models.json`。不包含更深层
+entry、临时 sibling、lock、Vault record、mode、timestamp、inode 或其他 OS metadata。
+
+Record 按 POSIX 相对路径 UTF-8 字节做 lexicographic 排序。每项 framing 为：
+
+```text
+u32be(path 字节长度) || path UTF-8 || state
+```
+
+`state` 是单字节：`00` 表示 missing，`01` 表示 regular file，`02` 表示 directory，
+`03` 表示其他对象（包括 symlink）。Regular file 随后追加
+`u64be(content 字节长度) || 原始 content bytes`。因此 missing、empty、directory 与
+non-file 状态互不混淆，也不会解析或归一化 JSON。Reference vectors 位于
+[`tools/validator/fixtures/conformance/revision-v1.json`](https://github.com/openlapp/lapp/blob/main/tools/validator/fixtures/conformance/revision-v1.json)。
+
+Direct provider directory name 在 framing 前必须能表示为 well-formed UTF-8，且只包含
+Unicode scalar value。无法表示的 raw POSIX filename 必须让 revision 以
+`PROFILE_PATH_INVALID` 失败，不能用 replacement character 解码。Writer 绝不能创建
+此类名称。合法 LAPP provider ID 只含 ASCII，因此总能满足该规则。
+
+## Stable read
+
+返回完整 Profile 或 snapshot 的 reader 都必须执行 stable read，无论 caller 是否准备
+mutation。默认最多执行三次完整尝试，每次必须：
+
+1. 确认 `writer-v1.lock` 不存在；
+2. 计算 `revisionBefore`；
+3. 读取完整 Profile，执行 I-JSON、Schema 与语义校验，但不解析凭据、不访问网络；
+4. 计算 `revisionAfter`；
+5. 再次确认 `writer-v1.lock` 不存在；
+6. 仅在两个 revision 完全相同时接受 snapshot。
+
+稳定但非法的 Profile 返回 canonical validation diagnostics。看到 lock 或 revision 不同
+的尝试必须整体丢弃。三次都未成功时返回 `PROFILE_READ_UNSTABLE`，绝不能返回 mixed
+snapshot。实现可以接受更低的 caller-supplied attempt limit，但不得静默无限重试。
+
+## 当前用户全局 writer 协调
+
+所有合规 writer（包括只修改 Vault 的凭据操作）都必须持有
+`<LAPP_STATE_HOME>/locks/writer-v1.lock` 这一把当前用户全局锁。Device Vault 在当前
+OS 用户下共享，因此即使操作不同 `LAPP_HOME` root，也必须串行化。
+
+获取锁就是以不替换现有对象的方式原子创建 `writer-v1.lock` 目录。创建成功后，owner
+用 exclusive-create 写入 I-JSON `owner.json`，且只能包含：
+
+```json
+{
+  "version": 1,
+  "token": "123e4567-e89b-12d3-a456-426614174000",
+  "pid": 1234,
+  "createdAt": "2026-07-17T09:30:00Z"
+}
+```
+
+`token` 是 canonical 小写连字符 UUID string；`pid` 是 `0` 到
+`9007199254740991` 的整数；`createdAt` 使用 Schema 规定的 canonical RFC 3339 UTC
+subset，以 `Z` 结尾且秒数为 `00` 到 `59`。其日期与时间还必须是实际存在的 Gregorian
+calendar value，不能只匹配 lexical pattern。Record 没有 heartbeat 或 expiry 字段。Versioned schema 为
+[`schema/writer-lock.schema.json`](https://github.com/openlapp/lapp/blob/main/schema/writer-lock.schema.json)。
+Creator 进入 mutation critical section 前必须 flush owner record。Exclusive owner
+creation 或 flush 失败时，只有刚创建该目录的 creator 可以尝试 ownership-safe cleanup；
+cleanup 失败则保留锁供显式恢复，并让 acquisition 失败。
+
+目录已存在时，默认获取等待上限为 5000 ms；超时返回 `PROFILE_LOCKED`。正常操作绝不
+能根据 `createdAt`、process identity、PID 是否存活、文件年龄或 heartbeat 推断锁已
+废弃，也绝不能 steal 或 replace 该锁。
+
+释放前，owner 必须重读、校验 `owner.json` 并要求 token 完全一致；随后先把 lock
+directory 原子 rename 成 owner-specific sibling，再删除改名后的目录，从而不会删除
+新 owner 的锁。Token 不符、record 畸形、filesystem object 异常或 ownership-safe
+release 失败都返回 `PROFILE_LOCK_INVALID`，并保留观察到的锁。
+
+Lock repair 是独立、显式且经用户授权的操作。它必须先展示或返回观察到的 owner
+record，接收该精确 token 作为确认，重读并比较 token，然后把 lock directory 原子
+rename 成 repair-specific sibling 后删除。Token 变化时必须中止。Owner 缺失或畸形
+时无法完成 token compare；合规 repair 必须返回 `PROFILE_LOCK_INVALID` 并保留锁。
+Operator 在独立证明没有 writer 活跃后选择的 tokenless 手工 filesystem recovery 明确
+位于 LAPP 协议之外。Repair 绝不自动触发，也不得使用年龄、PID 或 heartbeat
+heuristic。
+
+## CAS 写入与 rollback
+
+所有 writer mutation（包括仅 Vault credential set/delete）都必须携带 stable Profile
+read 得到的 `expectedRevision`。Writer 必须：
+
+1. 获取当前用户全局锁；
+2. 持锁时使用同样最多三次尝试的 revision bracketing 得到 coherent current Profile（因
+   writer 自己持锁，此处省略 lock-absence checks）；
+3. 在任何 Vault access、文件创建、删除或修改前比较该 revision 与
+   `expectedRevision`；
+4. 不同则返回 `PROFILE_CONFLICT`，不产生任何 mutation；
+5. 在内存应用一个 semantic operation，再校验完整 proposed Profile；
+6. 第一次 side effect 前立即重算 revision，再次要求它等于 `expectedRevision`；检测到
+   non-conforming manual edit 时同样返回 `PROFILE_CONFLICT`；
+7. 只提交 proposal 真正改变的文件。
+
+每次写入或删除前都必须解析 target 并证明它仍在 LAPP root 内。Managed path 上的
+symlink 或其他 non-regular object 必须拒绝。Changed file 应写入 restrictive temporary
+sibling、flush 后 atomic rename；平台支持时还要 flush containing directory。Unchanged
+file 不得重写。多个 changed profile path 按 revision 使用的同一 UTF-8 bytewise 顺序
+提交。Required provider directory 按该顺序在文件前创建。只有两个 managed file 都
+已删除且目录为空时才能删除 provider directory；writer 绝不能递归删除未知 content。
+删除 provider 前，writer 必须在第一次 side effect 之前检查其目录；若除两个 managed
+regular file 外还存在任何 entry，必须在不产生 mutation 的情况下拒绝整个 commit。
+删除目录前还必须再次检查为空；目录新出现 content 属于 profile step failure，必须
+触发 rollback，绝不能把留下 orphan content 的状态当作成功 commit。
+Directory action 也按实际 action 的严格逆序 rollback。
+
+第一次 side effect 前，writer 必须保存每个 affected profile path 与 Vault record 的
+精确旧状态，包括 present 与 absent 的区别。任一 profile step 失败时，按 commit 的逆序
+恢复已改变 path；即使前一项 rollback 失败，也必须继续尝试所有必要 rollback。
+
+组合 Vault mutation 与 Profile change 时，先验证完整 proposal，保存 Vault 原值，再
+修改 Vault，最后提交 Profile。Profile commit 失败时先 rollback Profile，再把 Vault
+恢复为精确旧 record 或 absent。全部恢复成功则返回原始且已脱敏的 write failure。
+Profile-only transaction 的 Profile rollback 不完整返回
+`PROFILE_UPDATE_PARTIAL_FAILURE`。任何修改过 Vault 的 transaction 只要 Profile
+rollback 或 Vault restoration 任一不完整，top-level code 就使用安全优先级更高的
+`CREDENTIAL_UPDATE_PARTIAL_FAILURE`；structured redacted details 可以同时记录 Profile
+restoration 不完整。因此二者同时失败时也确定由
+`CREDENTIAL_UPDATE_PARTIAL_FAILURE` 优先。Partial-failure diagnostic 不得泄漏新旧
+secret。全局锁必须持有到 rollback 完成并 ownership-safe release。
+
+Dry run 只执行 stable read、semantic mutation 与 proposal validation；不得获取 mutation
+lock、解析或查看 Vault record、写 temporary file 或改变 Profile state。

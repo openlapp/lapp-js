@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    {
+      "id": "kimi-k2.7-code",
+      "name": "Kimi K2.7 Code",
+      "aliases": ["kimi-coding-plan", "kimi-code"],
+      "protocols": ["openai-chat-completions"],
+      "type": "chat",
+      "inputModalities": ["text", "image"],
+      "outputModalities": ["text"],
+      "capabilities": ["chat", "stream", "tool-call", "vision", "coding"],
+      "contextWindow": 262100,
+      "enabled": true
+    }
+  ]
+}

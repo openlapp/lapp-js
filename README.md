@@ -1,19 +1,22 @@
 # lapp-js
 
-The TypeScript SDK and CLI for **LAPP** (Local AI Provider Profiles). LAPP is a
-local provider registry: applications discover models and connection details,
-then communicate with the upstream provider directly.
+The official TypeScript SDK and CLI for **LAPP** (Local AI Provider Profiles).
+LAPP is an open local provider-profile protocol: applications discover models
+and connection details, then communicate with the upstream provider directly.
 
 > **Languages:** [English](README.md) | [中文](README_zh.md)
 
 ```text
-Direct: app -> read ~/.lapp -> upstream API
-SDK:    app -> @openlapp/lapp -> upstream API
-CLI:    app -> lapp JSON output -> upstream API
+Recommended: app -> @openlapp/lapp -> upstream API
+Direct:      app -> read ~/.lapp -> upstream API
+CLI:         app -> lapp JSON output -> upstream API
 ```
 
-Applications always communicate with upstream providers directly; no
-background service or request-routing component is required.
+Applications always communicate with upstream providers directly; there is no
+daemon, gateway, proxy, or request-routing service. Official integrations
+should prefer an SDK so applications do not need to handle credential storage
+details, while direct protocol implementations and the CLI remain conforming
+open integration paths.
 
 | Package | Purpose |
 |---------|---------|
@@ -21,6 +24,10 @@ background service or request-routing component is required.
 | [`@openlapp/cli`](docs/cli.md) | Thin command-line wrapper with stable JSON output. |
 
 ## Install
+
+> The packages are currently distributed only through the machine-local beta
+> Registry. The npmjs commands below become active with the first public
+> `1.0.0` release. Contributors can use the [local beta Registry](dev/registry/README.md).
 
 ```bash
 npm install @openlapp/lapp
@@ -104,6 +111,25 @@ canonical model ID, endpoint, headers, and authentication. The client resolves
 again immediately before each direct request, so Vault rotation is picked up
 without rebuilding the client.
 
+## Manager status
+
+There is not yet a stable supported GUI release. The standalone
+[`openlapp/lapp-manager`](https://github.com/openlapp/lapp-manager) repository
+now contains an Alpha implementation built with Tauri 2, Vue 3, TypeScript,
+and Naive UI. It links the public Rust SDK in-process—never through a sidecar,
+daemon, gateway, or proxy. Current source and tests are implementation
+evidence; a signed, validated installer and a stable UI contract remain
+release work.
+
+The former `@openlapp/react` and `@openlapp/vue` packages remain removed. Their
+reusable product, security, accessibility, and behavior contracts are
+maintained as Manager documentation rather than restored as public framework
+packages.
+
+The [Electron bridge example](examples/electron-manager/README.md) is an
+unsupported integration reference for the current Node manager host. It is not
+a complete GUI or the basis of the standalone Manager.
+
 ## Supported protocols
 
 | Connection protocol | Direct chat client | Model discovery |
@@ -121,6 +147,8 @@ The bundled chat client returns `TargetResolutionError` with code
 - **[Getting started](docs/getting-started.md)** — the three consumption paths
 - **[CLI reference](docs/cli.md)** — commands, JSON output, and exit codes
 - **[SDK guide](docs/sdk.md)** — discovery, resolution, refresh, and direct calls
+- **[Manager](https://github.com/openlapp/lapp-manager)** — standalone Tauri/Vue/Naive UI Alpha source and contracts
+- **[Local beta Registry](dev/registry/README.md)** — private Verdaccio publishing and clean installs
 - [Configuration](docs/configuration.md) — v1 JSON profile contract
 - [Security](docs/security.md) — trust boundary and credential handling
 - [Protocols](docs/protocols.md) — protocol selection and model discovery
@@ -138,6 +166,11 @@ The bundled chat client returns `TargetResolutionError` with code
 - Remote model refresh is explicit, non-destructive, and not a background cache.
 - LAPP does not protect credentials from another trusted process running as the
   same OS user after that process explicitly resolves a connection.
+- Official Profile + Vault mutations share one current-user global writer lock;
+  normal writers never steal it based on age, PID, or heartbeat.
+- Successful SDK responses redact resolved credentials by default. Only an
+  explicit `redactSuccessfulSecrets: false` preserves them; errors and
+  diagnostics are always redacted.
 
 ## License
 

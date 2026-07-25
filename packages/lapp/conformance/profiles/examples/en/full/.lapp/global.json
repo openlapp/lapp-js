@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0",
+  "defaults": {
+    "chat": {
+      "providerId": "deepseek",
+      "modelId": "deepseek-v4-flash"
+    },
+    "embedding": {
+      "providerId": "siliconflow",
+      "modelId": "BAAI/bge-m3"
+    },
+    "image-generation": {
+      "providerId": "media-compatible",
+      "modelId": "image-compatible"
+    },
+    "text-to-speech": {
+      "providerId": "media-compatible",
+      "modelId": "speech-compatible"
+    }
+  }
+}

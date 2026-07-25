@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "type": "chat",
+      "protocols": ["anthropic-messages"]
+    }
+  ]
+}

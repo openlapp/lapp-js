@@ -1,0 +1,73 @@
+{
+  "fixtureVersion": "1.0",
+  "protocol": "openai-images",
+  "context": {
+    "providerId": "fixture-provider",
+    "baseUrl": "https://api.example.test/v1?tenant=fixture",
+    "model": "fixture-image-model",
+    "auth": { "type": "none" },
+    "requestHeaders": { "X-Fixture-Trace": "trace-image" }
+  },
+  "request": {
+    "input": {
+      "operation": "image-generation",
+      "prompt": "A small red circle on a white background.",
+      "count": 1,
+      "size": {
+        "width": 1024,
+        "height": 1024
+      },
+      "outputFormat": "png"
+    },
+    "expected": {
+      "url": "https://api.example.test/v1/images/generations?tenant=fixture",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "X-Fixture-Trace": "trace-image"
+      },
+      "body": {
+        "model": "fixture-image-model",
+        "prompt": "A small red circle on a white background.",
+        "n": 1,
+        "size": "1024x1024",
+        "output_format": "png"
+      }
+    }
+  },
+  "response": {
+    "upstream": {
+      "created": 1751328000,
+      "output_format": "png",
+      "data": [
+        {
+          "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        }
+      ]
+    },
+    "expected": {
+      "status": "succeeded",
+      "target": {
+        "provider": "fixture-provider",
+        "model": "fixture-image-model",
+        "protocol": "openai-images",
+        "operation": "image-generation"
+      },
+      "output": {
+        "parts": [
+          {
+            "type": "artifact",
+            "artifact": {
+              "kind": "image",
+              "mediaType": "image/png",
+              "source": {
+                "type": "inline",
+                "dataBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

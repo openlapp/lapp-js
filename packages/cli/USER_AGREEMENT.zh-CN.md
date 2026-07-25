@@ -1,7 +1,7 @@
 # LAPP 用户协议与风险披露
 
 协议版本：1.0  
-最后更新：2026-07-15
+最后更新：2026-07-17
 
 > 致发行方：本文档是司法辖区中立的分发模板，不构成法律意见。发行方若要把它作为
 > 有约束力的协议使用，必须在安装器或应用商店中补充其法律名称、联系方式、生效
@@ -164,9 +164,15 @@ Provider 的价格、模型、协议、限制和可用性可能变化，LAPP 不
 本地模型目录是权威目录。远端刷新只能显式执行且只追加，因此上游已经删除的模型仍
 可能保留，直到你主动删除。使用前应核对模型身份、能力、价格和可用性。
 
-LAPP v1 假定只有一个 writer，不提供 Profile 级锁、多文件事务、合并解决或自动
-备份。多个 writer、变更中断、手工编辑、存储故障或恶意本地篡改可能造成不一致或
-数据丢失。应保留适当备份，避免同时写入，编辑后进行校验，并在 apply 前审查变更。
+LAPP v1 使用一把当前用户锁、stable snapshot、compare-and-swap revision 与
+best-effort rollback 协调合规 writer。这些机制不是访问控制、自动备份，也不能让多个
+文件与 Device Vault 形成 crash-atomic transaction。手工 editor、不合规或恶意的同用户
+软件、变更中断、存储故障和不完整 rollback 仍可能造成不一致或数据丢失。
+
+Writer lock 没有 heartbeat、自动 expiry、基于 PID 的 stale 判断或自动偷锁。Writer
+crash 后可能阻塞后续修改，直到你显式检查并 repair observed lock。Writer 仍活跃时
+repair 会允许并发 mutation，可能造成数据丢失。应保留适当备份，不要只因 lock 看似
+很旧就绕过它；编辑或收到 partial-failure 后应重新校验，并在 apply 前审查变更。
 
 本地开发可以使用 loopback HTTP，但它没有 TLS 加密。不要把无需认证的本地模型
 服务暴露给不可信用户或网络。

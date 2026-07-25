@@ -1,0 +1,36 @@
+storage: /verdaccio/storage
+
+auth:
+  htpasswd:
+    file: /verdaccio/storage/htpasswd
+    max_users: 1
+    algorithm: bcrypt
+    rounds: 10
+
+uplinks: {}
+
+packages:
+  '@openlapp/*':
+    access: $authenticated
+    publish: $authenticated
+    unpublish: $authenticated
+
+  '@*/*': {}
+
+  '**': {}
+
+web:
+  enable: true
+  title: OpenLAPP Local Registry
+
+middlewares:
+  audit:
+    enabled: false
+
+publish:
+  allow_offline: true
+
+log:
+  type: stdout
+  format: pretty
+  level: http

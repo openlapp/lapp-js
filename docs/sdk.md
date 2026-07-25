@@ -162,7 +162,7 @@ secret after successful resolution.
 ## Refresh models
 
 ```ts
-import { refreshModels, writeProfileAtomic } from "@openlapp/lapp";
+import { refreshModels } from "@openlapp/lapp";
 
 const abortController = new AbortController();
 const result = await refreshModels(profile, "openai", {
@@ -172,7 +172,6 @@ const result = await refreshModels(profile, "openai", {
 });
 
 console.log(result.added, result.diagnostics);
-await writeProfileAtomic(result.nextProfile, { before: profile });
 ```
 
 `refreshModels()` contacts one provider's configured discovery URL and returns
@@ -185,6 +184,8 @@ Credential options are `{ env?, vault?, resolver? }`, with the same precedence
 and no-fallback rules as `resolveConnection()`. Tests may inject
 `options.fetch`. `options.signal` reaches every discovery request.
 Credential-bearing requests reject redirects.
+Commit `result.nextProfile` with the stable-read revision through
+`commitProfileTransaction()` as shown below.
 
 ## Manage and write profiles
 
@@ -194,22 +195,38 @@ Management functions are immutable:
 |----------|---------|
 | `createProfile({ rootDir })` | Create an empty in-memory profile. |
 | `upsertProvider(profile, input)` | Add or patch a provider; omitted fields are preserved. |
-| `upsertProviderWithCredential(profile, input, options?)` | Add or patch a Provider and apply the SDK's credential-storage default. |
+| `prepareProviderUpdate(profile, input)` | Purely prepare a Provider and optional pending Vault write using the SDK's credential-storage default. |
 | `upsertModel(profile, input)` | Add or patch a model; omitted fields are preserved. |
 | `removeProvider(profile, id)` | Remove an unreferenced provider. |
 | `removeModel(profile, target)` | Remove an unreferenced model by ID or alias. |
 | `setDefault(profile, task, target)` | Store a canonical task default. |
 
-Use `planChanges(before, after)` for a file-level preview and
-`writeProfileAtomic(after, { before })` to validate and persist standard JSON.
-Writes reject path escape and invalid profiles. v1 assumes one writer.
+Use `planChanges(before, after)` for a file-level preview. The exported
+`writeProfileAtomic(after, { before })` primitive validates and persists
+standard JSON, but does not acquire the global lock or perform CAS by itself;
+specialized integrations must provide both. Official Profile-only, Vault-only,
+and combined mutations use
+`commitProfileTransaction()`, which holds the current-user global writer lock,
+requires an expected revision, rechecks it before the first side effect, and
+coordinates rollback. A zero-provider write still creates the required
+`providers/` directory. Removing a provider is rejected before mutation if its
+directory contains unmanaged entries; content introduced during the commit
+causes rollback rather than a successful partial removal.
 
-For new raw credentials, use the asynchronous managed writer:
+For new raw credentials, prepare and commit one locked transaction:
 
 ```ts
-import { upsertProviderWithCredential } from "@openlapp/lapp";
+import {
+  commitProfileTransaction,
+  loadProfile,
+  prepareProviderUpdate,
+  readStable,
+  resolveLappRoot,
+} from "@openlapp/lapp";
 
-const result = await upsertProviderWithCredential(profile, {
+const root = resolveLappRoot();
+const current = readStable(root, () => loadProfile({ path: root }));
+const prepared = prepareProviderUpdate(current.value, {
   id: "openai",
   baseUrl: "https://api.openai.com/v1",
   protocols: ["openai-responses"],
@@ -218,10 +235,15 @@ const result = await upsertProviderWithCredential(profile, {
     credential: { secret: userInput },
   },
   models: [],
-}, { vault });
+});
 
-// Vault is updated, but disk is not.
-await writeProfileAtomic(result.profile, { before: profile });
+await commitProfileTransaction({
+  rootDir: root,
+  before: current.value,
+  next: prepared.profile,
+  expectedRevision: current.revision,
+  ...(prepared.vaultWrite ? { vaultWrite: prepared.vaultWrite } : {}),
+});
 ```
 
 Omitting `credential.storage` selects Vault storage and credential ID
@@ -231,10 +253,64 @@ write an `env://NAME` reference without reading it. Set
 `{ secret, storage: "plaintext" }` only as an explicit opt-in; the result then
 contains a `PLAINTEXT_SECRET_IN_USE` warning.
 
-`upsertProviderWithCredential()` returns
-`{ profile, credentialRef?, warnings }` and never writes the Profile to disk.
+`prepareProviderUpdate()` returns
+`{ profile, credentialRef?, vaultWrite?, warnings }` and has no side effects.
+`commitProfileTransaction()` applies the optional Vault write and Profile under
+one global lock with CAS and rollback.
 The lower-level synchronous `upsertProvider()` remains available for callers
 that already have an `AuthConfig`; it does not manage or resolve credentials.
+
+## Desktop manager host
+
+Node embedding applications may keep profile, Vault, and provider-test
+authority in a trusted process. Import the historical host bridge from its
+explicit Node-only subpath:
+
+```ts
+import { createNodeLappManagerHost } from "@openlapp/lapp/manager-host";
+
+const host = createNodeLappManagerHost({
+  path: process.env.LAPP_HOME,
+});
+```
+
+Renderer and preload code should import only types and the protocol version
+from the browser-safe contract subpath:
+
+```ts
+import type { LappManagerBridgeV1 } from "@openlapp/lapp/manager-contract";
+```
+
+`LappManagerBridgeV1` exposes five narrow capabilities: `handshake()`,
+`getSnapshot()`, `transact()`, `testConnection()`, and optional `subscribe()`.
+Snapshots contain an opaque revision and sanitized profile/credential status;
+they never contain plaintext credentials. Mutations are semantic
+`ManagerOperation` values sent with the expected revision. The Node host
+serializes transactions, coordinates official writers with the current-user
+global cross-process lock, and rechecks revision before mutation. Its opaque
+revision combines the canonical Profile revision with a manager-owned Vault
+generation, so a Vault-only rotation invalidates older snapshots even when no
+Profile bytes change. The host restores a Vault record when a later Profile
+commit fails.
+
+The bridge has no credential get, resolve, export, or rebind operation. Binding
+mismatches require saving the intended provider configuration and entering the
+credential again. Do not expose the lower-level `CredentialVault`, filesystem,
+network, transaction-helper, or generic IPC APIs to a renderer.
+
+`commitProfileTransaction()`, `computeProfileRevision()`, `readProfileStable()`, `readStable()`,
+`withWriterLock()`, `inspectWriterLock()`, and `repairWriterLock()` are public
+SDK primitives for official writer integrations such as the CLI. The lock is
+shared by every `LAPP_HOME` of the current OS user through `LAPP_STATE_HOME`;
+normal writers never steal it based on age, PID, or heartbeat. Repair is an
+explicit operator action using the exact observed owner token. See the
+[API reference](../packages/lapp/docs/api.md).
+
+There is not yet a stable supported GUI release. The standalone
+[`openlapp/lapp-manager`](https://github.com/openlapp/lapp-manager) repository
+contains the current Tauri/Vue/Naive UI Alpha implementation and its contracts.
+The Electron example is an unsupported Node-host integration reference, not a
+complete GUI or the basis of the standalone Manager.
 
 ## Direct-call client
 
@@ -246,8 +322,6 @@ const client = createLappClient({
   provider: "openai",
   model: "gpt-4o-mini",
   vault,
-  // Enable when provider content is written to a terminal or log.
-  redactSuccessfulSecrets: true,
 });
 
 const response = await client.chat({
@@ -264,10 +338,10 @@ plaintext. A Vault rotation therefore takes effect on the next operation.
 Immediately before sending auth, the client verifies the final request origin
 again and uses `redirect: "error"`.
 
-The CLI always enables `redactSuccessfulSecrets` so a provider that echoes a
-Vault credential cannot place it on stdout. SDK callers can enable the same
-behavior; it is opt-in because it changes successful response content when the
-content literally contains the credential.
+`redactSuccessfulSecrets` defaults to `true`, so a provider that echoes a
+resolved credential cannot place it in successful response objects or stream
+events. Set it explicitly to `false` only when exact upstream response
+preservation is required. Errors, logs, and diagnostics are always redacted.
 
 Client methods:
 
@@ -284,11 +358,48 @@ messages/input, stream, tools, or authentication fields. `AbortSignal` is
 forwarded to the request. Tool arguments must parse as an object and satisfy
 the tool JSON Schema before a handler executes.
 
+## Media generation clients
+
+The root package also exports four separate factories:
+`createImageGenerationClient`, `createVideoGenerationClient`,
+`createSpeechSynthesisClient`, and `createMusicGenerationClient`. Image and
+speech use the generic `openai-images` and `openai-audio-speech` wires. Video
+and music expose the stable input, job, wait, stream, output-part, and error
+types, but LAPP 1.0 bundles no wire adapter for them; construction therefore
+fails with `PROTOCOL_NOT_SUPPORTED` before credentials or network access.
+
+```ts
+const image = createImageGenerationClient({ profile });
+const result = await image.generate({
+  prompt: "A small red circle",
+  count: 1,
+  size: { width: 1024, height: 1024 },
+  outputFormat: "png",
+});
+
+const speech = createSpeechSynthesisClient({ profile });
+for await (const event of speech.stream({ text: "Hello", voice: "alloy" })) {
+  if (event.kind === "audio") consume(event.bytes);
+}
+```
+
+Each factory selects the first supported protocol in the declared model or
+provider order. It never reads `providerType`, guesses a provider from IDs or
+URLs, probes the server, or silently changes wire protocols. `extra` is
+adapter-allowlisted and cannot replace reserved fields. URL artifacts are not
+downloaded automatically; call `downloadArtifact(artifact, { maxBytes })`.
+Provider auth is attached only to same-origin artifact URLs, with redirects
+rejected. `wait()` defaults to a 2-second interval and a 30-minute deadline;
+local timeout or abort does not claim remote cancellation.
+
 ## Errors
 
-Public typed errors are `ProfileValidationError`, `TargetResolutionError`,
-`CredentialError`, `MissingEnvSecretError`, `ModelRefreshError`, and
-`StreamingUnsupportedError`. No protocol intersection uses
+Public typed errors also include `ProfileLockedError`,
+`ProfileLockInvalidError`, `ProfileReadUnstableError`,
+`ProfileRevisionConflictError`, `ProfilePathInvalidError`, and
+`ProfileUpdatePartialFailureError`, alongside `ProfileValidationError`,
+`TargetResolutionError`, `CredentialError`, `MissingEnvSecretError`,
+`ModelRefreshError`, and `StreamingUnsupportedError`. No protocol intersection uses
 `TargetResolutionError.code === "PROTOCOL_NOT_SUPPORTED"`.
 
 Use the stable `CredentialError.code` rather than matching its redacted
@@ -309,5 +420,10 @@ CREDENTIAL_UPDATE_PARTIAL_FAILURE
 ```
 
 Native causes and credential values are never exposed in these public errors.
+After a combined transaction has mutated Vault, any incomplete Profile
+rollback or Vault restoration uses the top-level credential code. When Profile
+rollback is incomplete, stable `causes` also contains
+`PROFILE_UPDATE_PARTIAL_FAILURE`; if both restoration classes fail, the
+credential code still deterministically wins.
 
 For the complete export index, see the [API reference](../packages/lapp/docs/api.md).

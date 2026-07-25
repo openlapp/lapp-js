@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash",
+      "aliases": ["ds-v4-flash"],
+      "type": "chat",
+      "capabilities": ["chat", "stream"],
+      "enabled": true
+    }
+  ]
+}

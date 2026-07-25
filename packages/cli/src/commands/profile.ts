@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import {
+  commitProfileTransaction,
   createProfile,
   inspectProfile,
   listModels,
@@ -8,6 +9,7 @@ import {
   planChanges,
   ProfileValidationError,
   refreshModels,
+  readProfileStable,
   removeModel,
   removeProvider,
   resolveLappRoot,
@@ -37,6 +39,7 @@ import { printJson, redact } from "../output.js";
 import { applyPreset, getPreset, listPresets } from "../presets.js";
 import { readSecretInput } from "../secret-input.js";
 import { writeProfileWithVault, type PendingVaultWrite } from "./vault-transaction.js";
+import { readStable } from "./stable-read.js";
 
 const writeOptions = {
   yes: { type: "boolean" },
@@ -47,9 +50,9 @@ function pathFrom(positionals: string[]): string {
   return resolveLappRoot(onePath(positionals));
 }
 
-function requireExisting(root: string): LappProfile {
+function requireExistingStable(root: string): { value: LappProfile; revision: string } {
   if (!fs.existsSync(root)) throw new Error(`profile does not exist: ${root}`);
-  return loadProfile({ path: root });
+  return readProfileStable({ path: root });
 }
 
 function isEmptyDirectory(root: string): boolean {
@@ -60,6 +63,8 @@ async function maybeWrite(
   before: LappProfile | null,
   next: LappProfile,
   values: Record<string, string | boolean | string[] | undefined>,
+  rootDir: string,
+  expectedRevision: string,
 ): Promise<{ applied: boolean; changes: ReturnType<typeof planChanges>["changes"] }> {
   const validation = validateProfile(next);
   if (!validation.valid) {
@@ -67,7 +72,14 @@ async function maybeWrite(
   }
   const changes = planChanges(before, next).changes;
   if (!values.yes || values["dry-run"]) return { applied: false, changes };
-  await writeProfileAtomic(next, { ...(before ? { before } : {}) });
+  await commitProfileTransaction({
+    rootDir,
+    expectedRevision,
+    before,
+    next,
+    profileChanged: changes.length > 0,
+    writeProfile: writeProfileAtomic,
+  });
   return { applied: true, changes };
 }
 
@@ -283,9 +295,11 @@ export async function commandProvider(argv: string[]): Promise<void> {
   assertWriteMode(values);
   const root = pathFrom(positionals);
   const id = requiredString(values, "id");
-  const before = sub === "add" && (!fs.existsSync(root) || isEmptyDirectory(root))
-    ? null
-    : fs.existsSync(root) ? loadProfile({ path: root }) : null;
+  const uninitialized = sub === "add" && (!fs.existsSync(root) || isEmptyDirectory(root));
+  const stable = uninitialized || !fs.existsSync(root)
+    ? readStable(root, () => null)
+    : readProfileStable({ path: root });
+  const before = stable.value;
   if (sub !== "add" && !before) throw new Error(`profile does not exist: ${root}`);
   const profile = before ?? createProfile({ rootDir: root });
   const hasProvider = profile.providers.some((provider) => provider.config.id === id);
@@ -364,6 +378,8 @@ export async function commandProvider(argv: string[]): Promise<void> {
     printPlan(await writeProfileWithVault(before, next, {
       apply: Boolean(values.yes),
       dryRun: Boolean(values["dry-run"]),
+      rootDir: root,
+      expectedRevision: stable.revision,
     }, vaultWrite), outputSecrets);
   } catch (error) {
     if (error instanceof Error) error.message = redact(error.message, outputSecrets);
@@ -410,7 +426,8 @@ export async function commandModel(argv: string[]): Promise<void> {
   );
   assertWriteMode(values);
   const root = pathFrom(positionals);
-  const before = requireExisting(root);
+  const stable = requireExistingStable(root);
+  const before = stable.value;
   const providerId = requiredString(values, "provider");
   const id = requiredString(values, "id");
   const provider = before.providers.find((entry) => entry.config.id === providerId);
@@ -438,7 +455,7 @@ export async function commandModel(argv: string[]): Promise<void> {
           : {}),
         ...(enabledValue(values) !== undefined ? { enabled: enabledValue(values) } : {}),
       } satisfies ModelInput);
-  printPlan(await maybeWrite(before, next, values));
+  printPlan(await maybeWrite(before, next, values, root, stable.revision));
 }
 
 export async function commandDefault(argv: string[]): Promise<void> {
@@ -451,12 +468,14 @@ export async function commandDefault(argv: string[]): Promise<void> {
     ...writeOptions,
   });
   assertWriteMode(values);
-  const before = requireExisting(pathFrom(positionals));
+  const root = pathFrom(positionals);
+  const stable = requireExistingStable(root);
+  const before = stable.value;
   const next = setDefault(before, requiredString(values, "task"), {
     providerId: requiredString(values, "provider"),
     model: requiredString(values, "model"),
   });
-  printPlan(await maybeWrite(before, next, values));
+  printPlan(await maybeWrite(before, next, values, root, stable.revision));
 }
 
 export async function commandModels(argv: string[]): Promise<void> {
@@ -478,7 +497,8 @@ export async function commandModels(argv: string[]): Promise<void> {
         },
   );
   const root = pathFrom(positionals);
-  const profile = requireExisting(root);
+  const stable = requireExistingStable(root);
+  const profile = stable.value;
   if (sub === "list") {
     const models = listModels(profile, {
       ...(optionalString(values, "provider") ? { providerId: optionalString(values, "provider") } : {}),
@@ -522,7 +542,15 @@ export async function commandModels(argv: string[]): Promise<void> {
   }
   const result = await refreshModels(profile, providerId, { env: process.env });
   const applied = Boolean(values.apply);
-  if (applied) await writeProfileAtomic(result.nextProfile, { before: profile });
+  if (applied) {
+    await commitProfileTransaction({
+      rootDir: root,
+      expectedRevision: stable.revision,
+      before: profile,
+      next: result.nextProfile,
+      writeProfile: writeProfileAtomic,
+    });
+  }
   const data = { providerId, added: result.added, diagnostics: result.diagnostics, applied };
   if (values.json) printJson(data);
   else {

@@ -23,6 +23,8 @@ export interface ProviderConfig {
   schemaVersion: SchemaVersion;
   id: string;
   name?: string;
+  /** Opaque provider-family metadata. Runtime protocol selection ignores it. */
+  providerType?: string;
   enabled?: boolean;
   baseUrl: string;
   protocols: string[];
@@ -114,6 +116,7 @@ export interface ProfileInspection {
   providers: Array<{
     id: string;
     name?: string;
+    providerType?: string;
     enabled: boolean;
     protocols: string[];
     baseUrl?: string;
@@ -146,6 +149,7 @@ export type ModelSelector =
 export interface ModelDescriptor {
   providerId: string;
   providerName?: string;
+  providerType?: string;
   providerEnabled: boolean;
   modelId: string;
   modelName?: string;
@@ -197,12 +201,18 @@ export type CredentialErrorCode =
   | "VAULT_OPERATION_FAILED"
   | "CREDENTIAL_UPDATE_PARTIAL_FAILURE";
 
+export interface PartialFailureCause {
+  code: "PROFILE_UPDATE_PARTIAL_FAILURE";
+  message: string;
+}
+
 /** A deliberately redacted credential failure. Native error text is never exposed. */
 export class CredentialError extends Error {
   override name = "CredentialError";
   constructor(
     public readonly code: CredentialErrorCode,
     message: string,
+    public readonly causes: readonly PartialFailureCause[] = [],
   ) {
     super(message);
   }

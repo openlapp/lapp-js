@@ -74,6 +74,23 @@ Provider error text is scrubbed for common credential shapes before reaching
 CLI diagnostics. This is defense in depth, not a substitute for avoiding logs
 that contain request headers or resolved connections.
 
+Successful SDK response objects and stream events also redact the credential
+resolved for that request by default. `redactSuccessfulSecrets: false` is an
+explicit success-response opt-out only; errors and diagnostics remain redacted.
+
+## Desktop manager
+
+There is not yet a stable supported GUI release. The former React/Vue packages
+remain removed. The Electron example is an unsupported Node-host integration
+reference, while the current Tauri Manager Alpha implementation and its
+trust-boundary contract live in
+[`openlapp/lapp-manager`](https://github.com/openlapp/lapp-manager).
+
+A renderer is never a trusted security boundary. The Manager keeps filesystem,
+Vault, and network authority in its Rust backend and exposes only
+narrow commands. It must not expose credential get, resolve, export, or rebind,
+generic IPC, arbitrary filesystem access, or arbitrary network primitives.
+
 ## Endpoint binding
 
 Vault envelopes are bound to the configured provider ID, normalized origin,
@@ -106,6 +123,39 @@ Vault records are not part of `LAPP_HOME` backups and are not synchronized by
 LAPP. OS account, credential-store, or device resets may make a record
 unavailable. Keep an independent recovery path with the upstream provider, such
 as rotating or creating a replacement API key.
+
+Every official high-level Profile + Vault mutation holds one current-user
+global writer lock at `<LAPP_STATE_HOME>/locks/writer-v1.lock`. The lock is
+shared across all `LAPP_HOME` roots because Vault records are also shared.
+Normal writers wait up to 5000 ms and return `PROFILE_LOCKED`; they never steal
+a lock based on age, owner PID, or heartbeat. Repair is a separate dangerous
+operator action that must recheck the exact token returned by `lapp lock
+inspect`. Missing or malformed owner records return `PROFILE_LOCK_INVALID` and
+cannot be repaired through the token-checked protocol operation. Stable readers
+accept a snapshot only when no writer intervenes and
+both deterministic revisions match.
+
+Every official Profile-only, Vault-only, or combined mutation requires an
+expected revision. Low-level Profile transactions use the canonical Profile
+revision and check it after lock acquisition and again immediately before the
+first side effect. The Node manager host exposes a separate opaque revision
+that also incorporates a manager-owned Vault generation under
+`LAPP_STATE_HOME`; Vault-only mutations advance it while holding the global
+writer lock, so stale manager snapshots cannot silently overwrite a newer
+credential.
+
+Deleting a provider removes only its profile configuration. It never deletes
+the current-user Vault credential automatically because another LAPP root or
+application may reference the same `vault://<providerId>/<credentialId>`.
+Deleting shared credential storage is a separate, explicit `credential delete`
+operation. If both should be removed, delete the credential before deleting
+the provider configuration.
+
+Changing a provider from a Vault reference to `env://` or plaintext likewise
+changes only the profile reference and leaves the old shared Vault record
+intact. Management clients should warn about the retained record. If it should be
+removed, explicitly perform `credential delete` before changing the storage
+mode.
 
 ## File safety
 

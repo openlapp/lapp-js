@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "credential-reserved",
+  "baseUrl": "https://credential-reserved.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault://credential-reserved/com1.backup" }
+}

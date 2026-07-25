@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0",
+  "id": "bearer",
+  "baseUrl": "https://bearer.example/v1",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "env://BEARER_KEY" },
+  "modelDiscovery": { "protocol": "openai-models", "url": "https://bearer.example/v1/models" }
+}

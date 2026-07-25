@@ -1,0 +1,56 @@
+{
+  "algorithm": "lapp-profile-revision-v1",
+  "vectors": [
+    {
+      "name": "missing-root",
+      "kind": "missing-root",
+      "layout": { "root": "missing" },
+      "revision": "sha256:456f63cb84cb2687af0572afef1598a5ec819bf11467922665bfeed0bc21d6fd"
+    },
+    {
+      "name": "basic-profile",
+      "kind": "directory",
+      "root": "revision-basic/.lapp",
+      "layout": { "root": "fixture-directory" },
+      "revision": "sha256:3d5e1ebb4f6f8fd1176c8ea9eebcc5442551bab7bcfcd8d18ec0245ced107c7b"
+    },
+    {
+      "name": "non-file-markers",
+      "kind": "generated-non-file",
+      "layout": {
+        "root": "directory",
+        "entries": [
+          { "path": "global.json", "kind": "directory" },
+          { "path": "providers", "kind": "regular-file", "contentBase64": "" }
+        ]
+      },
+      "revision": "sha256:c765742faa09e951a74584c453bb8367ab4e7842011dab13d23fa0e01b3fd501"
+    },
+    {
+      "name": "provider-missing-and-non-file",
+      "kind": "generated-provider-missing-non-file",
+      "layout": {
+        "root": "directory",
+        "entries": [
+          { "path": "providers", "kind": "directory" },
+          { "path": "providers/a", "kind": "directory" },
+          { "path": "providers/a/provider.json", "kind": "missing" },
+          { "path": "providers/a/models.json", "kind": "directory" }
+        ]
+      },
+      "revision": "sha256:3a99ab67a03c8a48ca2aa64211033389b3377e46dd0a3d3ee458944e3b181adc"
+    },
+    {
+      "name": "symbolic-link-state-03",
+      "kind": "abstract-records",
+      "layout": {
+        "representativeObject": "symbolic-link",
+        "records": [
+          { "relativePath": "global.json", "state": 3 },
+          { "relativePath": "providers", "state": 0 }
+        ]
+      },
+      "revision": "sha256:b1b6569eda4acd57e50a72d3cda41eb8f269e0b8cfc372f4cc938a0c7389f4df"
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { ChangePlan, LappProfile } from "./types.js";
 import { isValidProviderId } from "./validate/constants.js";
 import { profileRoot } from "./profile-location.js";
+import { parseIJson } from "./json/ijson.js";
 
 function files(profile: LappProfile): Map<string, unknown> {
   const result = new Map<string, unknown>();
@@ -22,7 +23,8 @@ function files(profile: LappProfile): Map<string, unknown> {
 
 function fileMatches(target: string, value: unknown): boolean {
   try {
-    return isDeepStrictEqual(JSON.parse(fs.readFileSync(target, "utf8")), value);
+    const parsed = parseIJson(fs.readFileSync(target));
+    return parsed.ok && isDeepStrictEqual(parsed.value, value);
   } catch {
     return false;
   }

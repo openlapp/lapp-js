@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "encoded",
+  "baseUrl": "https://encoded.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault://encoded/default%2Fextra" }
+}

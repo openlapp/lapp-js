@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    {
+      "id": "image-compatible",
+      "name": "Compatible Image Model",
+      "aliases": ["image-default"],
+      "protocols": ["openai-images"],
+      "type": "image-generation",
+      "inputModalities": ["text"],
+      "outputModalities": ["image"],
+      "capabilities": ["image-generation"],
+      "enabled": true
+    },
+    {
+      "id": "speech-compatible",
+      "name": "Compatible Speech Model",
+      "aliases": ["tts-default"],
+      "protocols": ["openai-audio-speech"],
+      "type": "text-to-speech",
+      "inputModalities": ["text"],
+      "outputModalities": ["audio"],
+      "capabilities": ["text-to-speech"],
+      "enabled": true
+    }
+  ]
+}

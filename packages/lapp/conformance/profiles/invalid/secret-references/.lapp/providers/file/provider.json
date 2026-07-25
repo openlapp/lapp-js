@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "file",
+  "baseUrl": "https://file.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "file://secret" }
+}

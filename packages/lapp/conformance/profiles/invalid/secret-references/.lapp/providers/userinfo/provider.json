@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "id": "userinfo",
+  "baseUrl": "https://userinfo.example",
+  "protocols": ["openai-chat-completions"],
+  "auth": { "type": "bearer", "secret": "vault://user@userinfo/default" }
+}

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "1.0",
+  "defaults": {
+    "chat": {
+      "providerId": "missing-provider",
+      "modelId": "deepseek-v4-flash"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0",
+  "id": "media-compatible",
+  "name": "OpenAI-Compatible Media",
+  "enabled": true,
+  "baseUrl": "https://api.example.com/v1",
+  "protocols": ["openai-images", "openai-audio-speech"],
+  "auth": {
+    "type": "bearer",
+    "secret": "env://GENERATION_API_KEY"
+  }
+}
