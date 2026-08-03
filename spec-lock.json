@@ -2,9 +2,8 @@
   "version": 2,
   "source": "https://github.com/openlapp/lapp",
   "canonicalSnapshot": {
-    "kind": "working-tree",
-    "baseCommit": "29b0535acbe660a54bb782613495c040d1ea37ac",
-    "capturedDate": "2026-08-03"
+    "kind": "commit",
+    "commit": "46ad72624a62f230fb2444bea187a7eceaaec46a"
   },
   "lappSchemaVersion": "1.1",
   "schemas": {
