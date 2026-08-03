@@ -23,7 +23,7 @@
     "registry:logs": "docker compose -f dev/registry/compose.yaml logs -f registry",
     "registry:publish": "tsx scripts/publish-local.mts",
     "registry:smoke": "tsx scripts/smoke-local-registry.mts",
-    "verify:spec": "node scripts/verify-schema.mjs",
+    "verify:spec": "node --test scripts/resolve-canonical-ref.test.mjs && node scripts/verify-schema.mjs",
     "clean": "pnpm -r run clean",
     "verify:docs": "tsx scripts/verify-cli-docs.mts && tsx scripts/verify-protocols.mts"
   },

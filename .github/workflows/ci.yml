@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 defaults:
   run:
     shell: bash
@@ -23,12 +26,6 @@ jobs:
         with:
           path: lapp-js
 
-      - uses: actions/checkout@v4
-        with:
-          repository: openlapp/lapp
-          ref: 29b0535acbe660a54bb782613495c040d1ea37ac
-          path: lapp
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.2
@@ -38,6 +35,17 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
           cache-dependency-path: lapp-js/pnpm-lock.yaml
+
+      - name: Resolve canonical LAPP ref
+        id: canonical
+        run: node scripts/resolve-canonical-ref.mjs
+        working-directory: lapp-js
+
+      - uses: actions/checkout@v4
+        with:
+          repository: openlapp/lapp
+          ref: ${{ steps.canonical.outputs.ref }}
+          path: lapp
 
       - run: pnpm install --frozen-lockfile
         working-directory: lapp-js
@@ -91,12 +99,6 @@ jobs:
         with:
           path: lapp-js
 
-      - uses: actions/checkout@v4
-        with:
-          repository: openlapp/lapp
-          ref: 29b0535acbe660a54bb782613495c040d1ea37ac
-          path: lapp
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.2
@@ -106,6 +108,17 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
           cache-dependency-path: lapp-js/pnpm-lock.yaml
+
+      - name: Resolve canonical LAPP ref
+        id: canonical
+        run: node scripts/resolve-canonical-ref.mjs
+        working-directory: lapp-js
+
+      - uses: actions/checkout@v4
+        with:
+          repository: openlapp/lapp
+          ref: ${{ steps.canonical.outputs.ref }}
+          path: lapp
 
       - run: pnpm install --frozen-lockfile
         working-directory: lapp-js
