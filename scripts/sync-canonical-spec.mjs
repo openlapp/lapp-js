@@ -136,7 +136,7 @@ const lock = {
         capturedDate: new Date().toISOString().slice(0, 10),
       }
     : { kind: "commit", commit: baseCommit },
-  lappSchemaVersion: "1.0",
+  lappSchemaVersion: "1.1",
   schemas: Object.fromEntries(schemaFiles.map((file) => [
     file,
     hash(fs.readFileSync(path.join(schemaDestination, file))),

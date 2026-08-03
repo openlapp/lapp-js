@@ -2,6 +2,7 @@ import path from "node:path";
 import { CredentialError, ProfileValidationError, TargetResolutionError } from "../types.js";
 import type {
   AuthConfig,
+  AuthSource,
   CredentialBinding,
   Extensions,
   LappProfile,
@@ -94,6 +95,22 @@ export interface ModelInput {
 export interface ModelTarget {
   providerId: string;
   model: string;
+}
+
+export interface AuthSourceInput {
+  id: string;
+  driver: string;
+  protocols: string[];
+  name?: string;
+  enabled?: boolean;
+  config?: Record<string, import("../types.js").JsonValue>;
+  extensions?: Extensions;
+  models?: ModelEntry[];
+}
+
+export interface AuthModelTarget {
+  authId: string;
+  modelId: string;
 }
 
 function clone(profile: LappProfile): LappProfile {
@@ -257,7 +274,7 @@ export function prepareProviderUpdate(
 
 export function removeProvider(profile: LappProfile, providerId: string): LappProfile {
   const referenced = Object.entries(profile.global?.defaults ?? {})
-    .find(([, ref]) => ref.providerId === providerId);
+    .find(([, ref]) => "providerId" in ref && ref.providerId === providerId);
   if (referenced) throw new Error(`provider is referenced by default "${referenced[0]}"`);
   const next = clone(profile);
   next.providers = next.providers.filter((entry) => entry.config.id !== providerId);
@@ -296,12 +313,101 @@ export function upsertModel(profile: LappProfile, input: ModelInput): LappProfil
 export function removeModel(profile: LappProfile, target: ModelTarget): LappProfile {
   const modelId = canonicalModelId(profile, target);
   const referenced = Object.entries(profile.global?.defaults ?? {}).find(
-    ([, ref]) => ref.providerId === target.providerId && ref.modelId === modelId,
+    ([, ref]) => "providerId" in ref && ref.providerId === target.providerId && ref.modelId === modelId,
   );
   if (referenced) throw new Error(`model is referenced by default "${referenced[0]}"`);
   const next = clone(profile);
   const provider = requireProvider(next, target.providerId);
   provider.models.models = provider.models.models.filter((entry) => entry.id !== modelId);
+  return next;
+}
+
+/** Add or replace one portable LAPP 1.1 Auth source and its model document. */
+export function upsertAuthSource(profile: LappProfile, input: AuthSourceInput): LappProfile {
+  if (!isValidProviderId(input.id)) throw new Error(`invalid auth id: ${input.id}`);
+  const next = clone(profile);
+  // Auth is a LAPP 1.1 registry feature. Upgrade (or create) global.json in
+  // the same proposed profile so the subsequent atomic writer commits the
+  // global and auth files together. Provider-only defaults preserve their
+  // frozen 1.0 meaning inside the additive 1.1 document.
+  if (!next.global) {
+    next.global = { schemaVersion: "1.1", defaults: {} };
+  } else if (next.global.schemaVersion === "1.0") {
+    next.global = {
+      schemaVersion: "1.1",
+      defaults: structuredClone(next.global.defaults),
+      ...(next.global.extensions ? { extensions: structuredClone(next.global.extensions) } : {}),
+    };
+  }
+  next.auth ??= [];
+  const index = next.auth.findIndex((entry) => entry.config.id === input.id);
+  const existing = index >= 0 ? next.auth[index]! : undefined;
+  const source: AuthSource = {
+    config: {
+      ...(existing?.config ?? {}),
+      schemaVersion: "1.1",
+      id: input.id,
+      driver: input.driver,
+      protocols: [...input.protocols],
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+      ...(input.config !== undefined ? { config: structuredClone(input.config) } : {}),
+      ...(input.extensions !== undefined ? { extensions: structuredClone(input.extensions) } : {}),
+    },
+    models: input.models !== undefined
+      ? { schemaVersion: "1.0", models: structuredClone(input.models) }
+      : existing?.models ?? { schemaVersion: "1.0", models: [] },
+  };
+  if (index >= 0) next.auth[index] = source;
+  else next.auth.push(source);
+  return next;
+}
+
+export function removeAuthSource(profile: LappProfile, authId: string): LappProfile {
+  const referenced = Object.entries(profile.global?.defaults ?? {})
+    .find(([, ref]) => "authId" in ref && ref.authId === authId);
+  if (referenced) throw new Error(`auth source is referenced by default "${referenced[0]}"`);
+  const next = clone(profile);
+  if (next.auth) next.auth = next.auth.filter((entry) => entry.config.id !== authId);
+  return next;
+}
+
+export function setAuthDefault(
+  profile: LappProfile,
+  task: string,
+  target: AuthModelTarget,
+): LappProfile {
+  const source = profile.auth?.find((entry) => entry.config.id === target.authId);
+  if (!source) {
+    throw new TargetResolutionError(`auth source not found: ${target.authId}`, "AUTH_NOT_FOUND");
+  }
+  if (source.config.enabled === false) {
+    throw new TargetResolutionError(`auth source is disabled: ${target.authId}`, "AUTH_DISABLED");
+  }
+  const matches = source.models.models.filter(
+    (model) => model.id === target.modelId || model.aliases?.includes(target.modelId),
+  );
+  if (matches.length !== 1) {
+    throw new TargetResolutionError(
+      `model ${matches.length === 0 ? "not found" : "is ambiguous"}: ${target.authId}/${target.modelId}`,
+      matches.length === 0 ? "AUTH_MODEL_NOT_FOUND" : "MODEL_AMBIGUOUS",
+    );
+  }
+  const model = matches[0]!;
+  if (model.enabled === false) {
+    throw new TargetResolutionError(`model is disabled: ${target.authId}/${model.id}`, "MODEL_DISABLED");
+  }
+  const next = clone(profile);
+  if (!next.global) {
+    next.global = { schemaVersion: "1.1", defaults: {} };
+  } else if (next.global.schemaVersion === "1.0") {
+    next.global = {
+      schemaVersion: "1.1",
+      defaults: structuredClone(next.global.defaults),
+      ...(next.global.extensions ? { extensions: structuredClone(next.global.extensions) } : {}),
+    };
+  }
+  next.global.defaults[task] = { authId: target.authId, modelId: model.id };
   return next;
 }
 

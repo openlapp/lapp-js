@@ -53,7 +53,7 @@ import {
   type ManagerTransactionResult,
 } from "./contract.js";
 import { computeProfileRevision, ProfilePathInvalidError } from "./revision.js";
-export { computeProfileRevision, ProfilePathInvalidError } from "./revision.js";
+export { computeProfileRevision, computeRegistryRevision, ProfilePathInvalidError } from "./revision.js";
 import {
   commitManagerTransaction,
   type ManagerPendingVaultWrite,
@@ -73,8 +73,11 @@ import {
 
 export {
   commitProfileTransaction,
+  commitRegistryTransaction,
   type CommitProfileTransactionOptions,
   type CommitProfileTransactionResult,
+  type CommitRegistryTransactionOptions,
+  type CommitRegistryTransactionResult,
   ProfileRevisionConflictError,
 } from "./transaction.js";
 
@@ -633,10 +636,12 @@ export function createNodeLappManagerHost(
             global: {
               schemaVersion: stable.profile.global.schemaVersion,
               defaults: Object.fromEntries(
-                Object.entries(stable.profile.global.defaults).map(([task, target]) => [
+                Object.entries(stable.profile.global.defaults)
+                  .filter(([, target]) => "providerId" in target)
+                  .map(([task, target]) => [
                   redactErrorText(task, sensitive),
                   {
-                    providerId: redactErrorText(target.providerId, sensitive),
+                    providerId: redactErrorText((target as { providerId: string }).providerId, sensitive),
                     modelId: redactErrorText(target.modelId, sensitive),
                   },
                 ]),

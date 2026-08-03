@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lapp.dev/schema/1.1/global.schema.json",
+  "title": "LAPP 1.1 global.json",
+  "type": "object",
+  "required": ["schemaVersion", "defaults"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "1.1" },
+    "defaults": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/registryModelRef" }
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "registryId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "modelId": {
+      "type": "string",
+      "pattern": "^(?!\\s*$)[^\\u0000-\\u001F\\u007F]+$"
+    },
+    "providerModelRef": {
+      "type": "object",
+      "required": ["providerId", "modelId"],
+      "additionalProperties": false,
+      "properties": {
+        "providerId": { "$ref": "#/$defs/registryId" },
+        "modelId": { "$ref": "#/$defs/modelId" }
+      }
+    },
+    "authModelRef": {
+      "type": "object",
+      "required": ["authId", "modelId"],
+      "additionalProperties": false,
+      "properties": {
+        "authId": { "$ref": "#/$defs/registryId" },
+        "modelId": { "$ref": "#/$defs/modelId" }
+      }
+    },
+    "registryModelRef": {
+      "oneOf": [
+        { "$ref": "#/$defs/providerModelRef" },
+        { "$ref": "#/$defs/authModelRef" }
+      ]
+    }
+  }
+}

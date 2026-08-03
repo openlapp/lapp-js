@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const REVISION_DOMAIN = Buffer.from("lapp-profile-revision-v1\0", "ascii");
+const REGISTRY_REVISION_DOMAIN = Buffer.from("lapp-profile-revision-v2\0", "ascii");
 
 type RecordState = 0 | 1 | 2 | 3;
 
@@ -17,7 +18,7 @@ export class ProfilePathInvalidError extends Error {
   override name = "ProfilePathInvalidError";
   readonly code = "PROFILE_PATH_INVALID" as const;
 
-  constructor(message = "a managed provider directory name is not valid UTF-8") {
+  constructor(message = "a managed profile directory name is not valid UTF-8") {
     super(message);
   }
 }
@@ -59,35 +60,48 @@ function inspectRecord(root: string, relativePath: string): RevisionRecord {
  * Hash the exact managed profile bytes using the language-neutral LAPP v1
  * framing. The returned revision is opaque except for equality comparison.
  */
-export function computeProfileRevision(rootDir: string): string {
+function directoryRecords(
+  root: string,
+  directoryName: "providers" | "auth",
+  definitionFile: "provider.json" | "auth.json",
+): RevisionRecord[] {
+  const records: RevisionRecord[] = [inspectRecord(root, directoryName)];
+  if (records[0]!.state !== 2) return records;
+  const directory = path.join(root, directoryName);
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const names = fs.readdirSync(directory, { encoding: "buffer" }) as Buffer[];
+  for (const nameBytes of names) {
+    let name: string;
+    try {
+      name = decoder.decode(nameBytes);
+    } catch {
+      throw new ProfilePathInvalidError();
+    }
+    const entryPath = `${directoryName}/${name}`;
+    const entryRecord = inspectRecord(root, entryPath);
+    if (entryRecord.state !== 2) continue;
+    records.push(entryRecord);
+    records.push(inspectRecord(root, `${entryPath}/${definitionFile}`));
+    records.push(inspectRecord(root, `${entryPath}/models.json`));
+  }
+  return records;
+}
+
+function computeRevision(
+  rootDir: string,
+  domain: Buffer,
+  includeAuth: boolean,
+): string {
   const root = path.resolve(rootDir);
   const records: RevisionRecord[] = [
     inspectRecord(root, "global.json"),
-    inspectRecord(root, "providers"),
+    ...directoryRecords(root, "providers", "provider.json"),
   ];
-  if (records[1]!.state === 2) {
-    const providersDirectory = path.join(root, "providers");
-    const decoder = new TextDecoder("utf-8", { fatal: true });
-    const names = fs.readdirSync(providersDirectory, { encoding: "buffer" }) as Buffer[];
-    for (const nameBytes of names) {
-      let name: string;
-      try {
-        name = decoder.decode(nameBytes);
-      } catch {
-        throw new ProfilePathInvalidError();
-      }
-      const providerPath = `providers/${name}`;
-      const providerRecord = inspectRecord(root, providerPath);
-      if (providerRecord.state !== 2) continue;
-      records.push(providerRecord);
-      records.push(inspectRecord(root, `${providerPath}/provider.json`));
-      records.push(inspectRecord(root, `${providerPath}/models.json`));
-    }
-  }
+  if (includeAuth) records.push(...directoryRecords(root, "auth", "auth.json"));
   records.sort((left, right) => Buffer.compare(left.pathBytes, right.pathBytes));
 
   const hash = createHash("sha256");
-  hash.update(REVISION_DOMAIN);
+  hash.update(domain);
   hash.update(uint32(records.length));
   for (const record of records) {
     hash.update(uint32(record.pathBytes.length));
@@ -100,4 +114,13 @@ export function computeProfileRevision(rootDir: string): string {
     }
   }
   return `sha256:${hash.digest("hex")}`;
+}
+
+export function computeProfileRevision(rootDir: string): string {
+  return computeRevision(rootDir, REVISION_DOMAIN, false);
+}
+
+/** Hash the complete Provider + Auth registry using the LAPP revision-v2 framing. */
+export function computeRegistryRevision(rootDir: string): string {
+  return computeRevision(rootDir, REGISTRY_REVISION_DOMAIN, true);
 }

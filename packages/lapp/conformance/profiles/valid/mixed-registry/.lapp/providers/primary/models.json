@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    {
+      "id": "embed-local",
+      "protocols": ["openai-chat-completions"],
+      "capabilities": ["embedding"]
+    }
+  ]
+}

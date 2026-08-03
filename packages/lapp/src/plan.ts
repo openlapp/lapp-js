@@ -17,6 +17,14 @@ function files(profile: LappProfile): Map<string, unknown> {
     result.set(path.join(dir, "provider.json"), provider.config);
     result.set(path.join(dir, "models.json"), provider.models);
   }
+  for (const source of profile.auth ?? []) {
+    if (!isValidProviderId(source.config.id)) {
+      throw new Error(`invalid auth id: ${source.config.id}`);
+    }
+    const dir = path.resolve(root, "auth", source.config.id);
+    result.set(path.join(dir, "auth.json"), source.config);
+    result.set(path.join(dir, "models.json"), source.models);
+  }
   if (profile.global) result.set(path.resolve(root, "global.json"), profile.global);
   return result;
 }

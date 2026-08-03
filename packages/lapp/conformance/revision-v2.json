@@ -1,0 +1,45 @@
+{
+  "algorithm": "lapp-profile-revision-v2",
+  "vectors": [
+    {
+      "name": "missing-root",
+      "kind": "missing-root",
+      "layout": { "root": "missing" },
+      "revision": "sha256:bf058c4e89039cb9d19e256ece633e5593542467ce8c8be5c812f7af0be799bf"
+    },
+    {
+      "name": "auth-and-provider-profile",
+      "kind": "directory",
+      "root": "revision-auth/.lapp",
+      "layout": { "root": "fixture-directory" },
+      "revision": "sha256:add2e638125c0896bdbe915968130ee8286564deb52383a94fdd5f4a3697c371"
+    },
+    {
+      "name": "auth-root-non-file",
+      "kind": "abstract-records",
+      "layout": {
+        "records": [
+          { "relativePath": "global.json", "state": 0 },
+          { "relativePath": "providers", "state": 0 },
+          { "relativePath": "auth", "state": 3 }
+        ]
+      },
+      "revision": "sha256:20f2284da06e52d44f32efcf2868bb4f2232eb9bdb34b009c4b77d4036776985"
+    },
+    {
+      "name": "auth-missing-and-non-file",
+      "kind": "abstract-records",
+      "layout": {
+        "records": [
+          { "relativePath": "global.json", "state": 0 },
+          { "relativePath": "providers", "state": 0 },
+          { "relativePath": "auth", "state": 2 },
+          { "relativePath": "auth/a", "state": 2 },
+          { "relativePath": "auth/a/auth.json", "state": 0 },
+          { "relativePath": "auth/a/models.json", "state": 2 }
+        ]
+      },
+      "revision": "sha256:21a1e5c7057c7de0866c0be192bd99481f384f449573e67e3336a47fe8fd320d"
+    }
+  ]
+}

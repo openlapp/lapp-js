@@ -1,6 +1,6 @@
-# LAPP v1 规范
+# LAPP 1.1 规范
 
-LAPP（Local AI Provider Profiles）是供 AI 应用使用的本机 Provider Registry。应用可以用它发现已配置模型，把选中的模型解析成上游 URL 和凭据，然后直接与上游通信。
+LAPP（Local AI Provider Profiles）是供 AI 应用使用的本机 Model Source Registry。LAPP 1.0 定义 API-key 风格的 provider；LAPP 1.1 在保留全部合法 1.0 profile 的同时，新增通过用户授权订阅访问模型的 Auth Model Source。
 
 LAPP 是文件约定，不定义 daemon、gateway、proxy、路由服务、计费系统或远程控制面。应用可以自行读取文件，也可以调用实现本规范的 SDK 或 CLI。
 
@@ -14,16 +14,32 @@ LAPP 是文件约定，不定义 daemon、gateway、proxy、路由服务、计�
 │   └── <providerId>/
 │       ├── provider.json
 │       └── models.json
+├── auth/
+│   └── <authId>/
+│       ├── auth.json
+│       └── models.json
 └── global.json
 ```
 
 - `providers/` 中每个目录代表一个 provider。
 - 每个 provider 目录同时包含 `provider.json` 和 `models.json`。
+- LAPP 1.1 的 `auth/` 中每个目录代表一个 Auth Model Source；每个 auth 目录同时包含
+  `auth.json` 和 `models.json`。
 - `global.json` 可选。
 - LAPP v1 文件只能是 UTF-8 编码的 I-JSON，不支持 JSONC 或其他扩展名。
 - `manifest.json` 在 LAPP v1 中没有语义。
 
-三种文档都必须包含 `"schemaVersion": "1.0"`。实现必须拒绝不支持的版本。核心对象不接受未知字段；实现自定义数据只能放入 `extensions`。
+LAPP 1.0 的 `provider.json`、`models.json` 与 `global.json` 保持
+`"schemaVersion": "1.0"` 及冻结的 Schema。LAPP 1.1 新增
+`"schemaVersion": "1.1"` 的 `auth.json` 与扩展版 `global.json`；auth 所属的
+`models.json` 刻意复用未变化的 1.0 models Schema。`schemaVersion` 是文档版本，
+上述受控组合合法，其他组合与未知版本必须拒绝。核心对象不接受未知字段；实现自定义
+数据只能放入 `extensions`。
+
+只要 profile 含 `auth/`，就必须同时包含合法的 1.1 `global.json`，否则以
+`AUTH_REQUIRES_GLOBAL_1_1` 拒绝。1.0 profile 仍要求 `providers/` 且禁止 `auth/`；
+1.1 profile 中 `providers/` 与 `auth/` 可分别省略，但至少一个必须是目录。这个版本门
+确保合规的旧 1.0 reader/writer 会拒绝 auth profile，而不是静默忽略订阅状态。
 
 每个 object 的 member name 经 JSON escape 解析后必须唯一。字符串只能包含
 Unicode scalar value。数字必须是有限的 IEEE 754 binary64 值；所有整数都必须位于
@@ -48,15 +64,15 @@ Unicode scalar value。数字必须是有限的 IEEE 754 binary64 值；所有�
 
 ## 标识符
 
-Provider ID 必须匹配：
+Provider ID 与 auth ID 都必须匹配：
 
 ```text
 ^[a-z0-9][a-z0-9._-]{0,63}$
 ```
 
-它不能是 Windows 保留设备名（大小写不敏感的 `CON`、`PRN`、`AUX`、`NUL`、`COM1`–`COM9` 或 `LPT1`–`LPT9`，包括带扩展名的保留 basename），也不能以点结尾。Provider 目录名必须与 `provider.id` 完全一致。实现必须拒绝非法 ID，不得把 ID 清洗后当作文件名。
+它不能是 Windows 保留设备名（大小写不敏感的 `CON`、`PRN`、`AUX`、`NUL`、`COM1`–`COM9` 或 `LPT1`–`LPT9`，包括带扩展名的保留 basename），也不能以点结尾。Provider 目录名必须与 `provider.id` 完全一致，auth 目录名必须与 `auth.id` 完全一致。实现必须拒绝非法 ID，不得把 ID 清洗后当作文件名。Provider ID 与 auth ID 属于由字段 tag 区分的两个命名空间，因此可以同名。
 
-Model ID 是发送给上游的原始字符串，可以包含 `/`，但不能是空字符串、纯空白或含控制字符。同一 provider 内的全部 model ID 和 alias 共用一个唯一命名空间。
+Model ID 是发送给上游的原始字符串，可以包含 `/`，但不能是空字符串、纯空白或含控制字符。同一 provider 或 Auth Model Source 内的全部 model ID 和 alias 共用一个唯一命名空间。
 
 ## provider.json
 
@@ -222,6 +238,49 @@ HTTP header 名必须是合法 token，值不能含 CR 或 LF。`requestHeaders`
 
 合法空列表不产生改动。刷新只把远端新 ID 按 ID 排序后追加到现有列表末尾；可以填充本地缺失的显示名称，但不能覆盖任何已有本地字段，也不能删除本地模型。
 
+## auth.json
+
+LAPP 1.1 Auth Model Source 描述通过用户授权 runtime driver 访问的模型，而不是静态
+provider URL 与 API-key 形状：
+
+```json
+{
+  "schemaVersion": "1.1",
+  "id": "codex-personal",
+  "name": "Codex Personal",
+  "driver": "openai-codex",
+  "enabled": true,
+  "protocols": ["openai-responses"],
+  "config": {
+    "originator": "openlapp"
+  }
+}
+```
+
+`schemaVersion`、`id`、`driver` 与 `protocols` 必填。`name` 是可选非空显示名，
+`enabled` 缺省为 `true`。`driver` 必须匹配
+`^[a-z0-9][a-z0-9._-]{0,63}$`，是显式 runtime adapter key；实现不得根据 auth ID、
+model ID 或 config 猜测 driver。`protocols` 是非空有序列表，语法与 provider protocol
+ID 相同。可选的 `config` 与 `extensions` 都是 I-JSON object，未知成员必须无损保留。
+`config` 与 `extensions` 都只允许非密钥元数据；递归地把 key 忽略大小写并去掉 ASCII 分隔符后，若
+其包含凭据名必须拒绝。同一规则也适用于 Auth source 的 `models.json` 顶层及每个 model 的
+`extensions`。若 key
+包含 `token`、`secret`、`password`、`passphrase`、`apiKey`、`privateKey`、`accessKey`、
+`sessionKey`、`signingKey`、`credential`、`cookie` 或 `authorization` 等凭据家族，必须拒绝；
+`authorizationCode`、`deviceCode`、`codeVerifier`、`deviceAuthId`、`userCode` 等 OAuth
+临时凭据名同样必须拒绝。唯一允许的敏感家族例外是精确的公开元数据 key
+`tokenEndpoint` 与 `deviceCodeUrl`；`clientId`、`discoveryUrl`、`modelsUrl`、
+`inferenceBaseUrl`、`issuer`、`scope`、`reasoningEffort`、`accountId` 仍然合法。
+
+`auth.json` 是 Model Source 元数据，不是 token 文件。Access token、refresh token、
+Cookie、authorization code 等可用凭据不得写入 `config`、`extensions`、Auth source 的 `models.json`
+extensions、
+diagnostic 或日志。Runtime driver 应把私有授权状态保存在适当的当前用户受保护存储中。
+Profile 校验与模型列表读取不得调用 driver、解析授权状态或访问网络。
+
+实现可以在尚未实现某个 driver 时读取和列出 Auth Model Source；执行未知或不可用 driver
+时必须明确返回 unsupported，不得把它重新解释成 provider、猜 URL 或 fallback 到其他凭据。
+
 ## models.json
 
 ```json
@@ -258,7 +317,8 @@ HTTP header 名必须是合法 token，值不能含 CR 或 LF。`requestHeaders`
 `music-generation` capability；TTS 使用相同输出模态与 `text-to-speech`
 capability。`type` 始终是不透明描述数据，不是路由 key。
 
-存在 `protocols` 时，它必须是 provider protocols 的非空子集；缺省时继承 provider 的有序 protocols。
+存在 `protocols` 时，它必须是所属 provider 或 Auth Model Source protocols 的非空子集；
+缺省时继承 owner 的有序 protocols。
 
 `models.json` 是本地权威模型目录。远端返回值只是发现输入，不是第二套事实源。应用不得根据模型名称猜测能力。
 
@@ -281,25 +341,38 @@ well-known 名称见上文 `models.json` 一节，其他语法合法的操作名
 
 默认值必须用 canonical ID 引用现有且启用的 provider 和 model，不能把 alias 写入 `global.json`。没有 `global.json` 的 profile 仍然合法。
 
+LAPP 1.1 只改变引用与文档版本。`RegistryModelRef` 必须严格是以下两个封闭 object 之一：
+
+```json
+{ "providerId": "deepseek", "modelId": "deepseek-v4-flash" }
+{ "authId": "codex-personal", "modelId": "gpt-5-codex" }
+```
+
+两个 selector 互斥；同时出现、同时缺失或含未知成员都非法。Provider ref 保持 1.0
+语义。Auth ref 必须指向现有且启用的 Auth Model Source 与启用的 canonical model ID，
+不得保存 alias。1.1 的 `defaults` 可以为空，允许先登记来源、稍后再选默认模型。
+
 ## 连接解析
 
-输入 `{ providerId, model }` 或默认操作名后，实现必须：
+输入 provider/auth model selection 或默认操作名后，实现必须：
 
 1. 必要时先解析 default；
-2. 找到存在且启用的 provider；
-3. 在该 provider 的 model ID 与 aliases 中解析 `model`，歧义时报错；
+2. 按带 tag 的 selector 找到存在且启用的 provider 或 Auth Model Source；
+3. 在该来源的 model ID 与 aliases 中解析 `model`，歧义时报错；
 4. 确认模型启用，并把 alias 归一成 canonical model ID；
 5. 按前述有序交集规则选择协议；
-6. 验证 URL 和静态 headers；
-7. 解析 secret、执行 Vault 绑定校验，并且只构造一种认证方式；
-8. 返回 canonical provider ID、model ID、protocol、base URL、headers 和仅存在于内存的 auth 值。
+6. 对 provider 验证 URL 与静态 headers，解析 secret、执行 Vault 绑定校验并只构造一种认证方式；
+7. 对 Auth Model Source 返回 canonical auth ID、driver、model ID、protocol 与无损 config，
+   但不在这一阶段读取 driver 授权状态；
+8. 由选中的 provider adapter 或 auth driver 执行请求。
 
-读取模型列表不得解析 secret 或访问网络。只有连接解析和显式刷新需要凭据。
+读取或解析模型列表不得解析 secret、读取 driver token 或访问网络。Provider 请求执行与
+显式刷新可以按需解析凭据；auth 执行只在发送前即时解析 driver 状态。
 
 ## 校验与诊断
 
-实现必须依次执行 I-JSON、版本 Schema 与语义校验。未知、畸形或不受支持的 v1 数据
-必须拒绝；LAPP 1.0 不为早期 draft 提供 compatibility 或 migration layer。已存在的
+实现必须依次执行 I-JSON、版本 Schema 与语义校验。未知、畸形或不受支持的 1.0/1.1
+数据必须拒绝；LAPP 1.0 保持冻结，LAPP 1.1 是显式加法版本，而不是对 1.0 的重新解释。已存在的
 managed document path 如果不是 regular file（包括 symlink 或 directory），必须以
 `NON_REGULAR_FILE` 拒绝。
 
@@ -312,7 +385,8 @@ managed document path 如果不是 regular file（包括 symlink 或 directory�
 
 Location 不能是绝对路径、不能以 `./` 开头、不能含反斜杠。文件级诊断只使用路径；
 member 诊断必须使用解码后的精确 member path，并将 `~` 转义为 `~0`、`/` 转义为
-`~1`，例如 `providers/deepseek/provider.json#/auth/secret`。Message 可以本地化，
+`~1`，例如 `providers/deepseek/provider.json#/auth/secret` 或
+`auth/codex-personal/auth.json#/driver`。Message 可以本地化，
 输出顺序也可以不同；二者都不参与合规身份。任何诊断字段都不得出现 secret、Vault
 envelope 或未脱敏 native error。
 
@@ -320,6 +394,8 @@ envelope 或未脱敏 native error。
 
 Profile revision 是根据 managed bytes 与相关文件状态计算的不透明 CAS 值。文本格式为
 `sha256:` 后接 64 个小写十六进制字符，调用方只能比较是否相等。
+
+### Revision-v1（冻结的 LAPP 1.0）
 
 SHA-256 输入以 ASCII 字节 `lapp-profile-revision-v1` 和一个 NUL 字节开头，之后是
 四字节无符号大端 record 数量，再接下述 records。
@@ -346,10 +422,28 @@ Unicode scalar value。无法表示的 raw POSIX filename 必须让 revision 以
 `PROFILE_PATH_INVALID` 失败，不能用 replacement character 解码。Writer 绝不能创建
 此类名称。合法 LAPP provider ID 只含 ASCII，因此总能满足该规则。
 
+### Revision-v2（LAPP 1.1）
+
+Revision-v2 使用与 v1 相同的 framing、state byte、原始内容与 UTF-8 排序规则，文本格式
+仍为 `sha256:`。Domain 是 ASCII `lapp-profile-revision-v2` 后接一个 NUL byte。Record
+set 始终包含 `global.json`、`providers` 与 `auth`；provider records 与 revision-v1 完全
+相同。当 `auth` 是目录时，还包含每个 direct auth directory 的 structure record，以及
+各目录的 `auth/<name>/auth.json` 与 `auth/<name>/models.json`。不包含更深层 entry 或
+driver token-store record。
+
+冻结 vectors 位于
+[`tools/validator/fixtures/conformance/revision-v2.json`](https://github.com/openlapp/lapp/blob/main/tools/validator/fixtures/conformance/revision-v2.json)。
+实现不得把 auth path 加入 revision-v1，也不得为 1.1 复用 revision-v1 domain。1.1
+snapshot 使用 revision-v2；兼容 reader 读取 1.0 profile 时仍返回 revision-v1。
+
 ## Stable read
 
 返回完整 Profile 或 snapshot 的 reader 都必须执行 stable read，无论 caller 是否准备
 mutation。默认最多执行三次完整尝试，每次必须：
+
+1.0 profile 的尝试用 revision-v1 bracket，1.1 profile 用 revision-v2。兼容两版的 reader
+可以在读取前后分别计算两套候选 revision，再根据校验通过的 `global.json` 只比较对应的
+一对；不得拿 revision-v1 与 revision-v2 互相比。
 
 1. 确认 `writer-v1.lock` 不存在；
 2. 计算 `revisionBefore`；
@@ -426,13 +520,18 @@ read 得到的 `expectedRevision`。Writer 必须：
 symlink 或其他 non-regular object 必须拒绝。Changed file 应写入 restrictive temporary
 sibling、flush 后 atomic rename；平台支持时还要 flush containing directory。Unchanged
 file 不得重写。多个 changed profile path 按 revision 使用的同一 UTF-8 bytewise 顺序
-提交。Required provider directory 按该顺序在文件前创建。只有两个 managed file 都
-已删除且目录为空时才能删除 provider directory；writer 绝不能递归删除未知 content。
-删除 provider 前，writer 必须在第一次 side effect 之前检查其目录；若除两个 managed
+提交。Required provider 与 auth directory 按该顺序在文件前创建。只有两个 managed file 都
+已删除且目录为空时才能删除 provider 或 auth directory；writer 绝不能递归删除未知 content。
+删除 provider 或 Auth Model Source 前，writer 必须在第一次 side effect 之前检查其目录；若除两个 managed
 regular file 外还存在任何 entry，必须在不产生 mutation 的情况下拒绝整个 commit。
 删除目录前还必须再次检查为空；目录新出现 content 属于 profile step failure，必须
 触发 rollback，绝不能把留下 orphan content 的状态当作成功 commit。
 Directory action 也按实际 action 的严格逆序 rollback。
+
+向 1.0 profile 添加首个 Auth Model Source 是一次显式 CAS transaction：写入 auth 两个
+文档，同时创建或升级 `global.json` 为 1.1，并返回 revision-v2。合规 writer 绝不能在
+`global.json` 缺失或仍为 1.0 时创建 `auth/`。删除最后一个 auth source 时不得隐式降级
+profile 或 revision algorithm。
 
 第一次 side effect 前，writer 必须保存每个 affected profile path 与 Vault record 的
 精确旧状态，包括 present 与 absent 的区别。任一 profile step 失败时，按 commit 的逆序

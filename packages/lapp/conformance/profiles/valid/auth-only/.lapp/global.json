@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "1.1",
+  "defaults": {
+    "chat": { "authId": "codex-personal", "modelId": "gpt-5-codex" }
+  }
+}

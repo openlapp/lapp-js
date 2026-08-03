@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.1",
+  "defaults": {
+    "chat": { "authId": "primary", "modelId": "grok-heavy" },
+    "embedding": { "providerId": "primary", "modelId": "embed-local" }
+  }
+}

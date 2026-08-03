@@ -190,8 +190,13 @@ export const openaiResponsesAdapter: ProtocolAdapter = {
       const chunk = parsed as {
         type?: string;
         delta?: string;
+        error?: { message?: string };
         item?: { type?: string; id?: string; call_id?: string; name?: string; arguments?: string };
-        response?: { status?: string; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } };
+        response?: {
+          status?: string;
+          error?: { message?: string };
+          usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
+        };
       };
 
       if (chunk.type === "response.output_text.delta" && typeof chunk.delta === "string") {
@@ -236,6 +241,13 @@ export const openaiResponsesAdapter: ProtocolAdapter = {
           };
         }
         yield { kind: "finish", reason: chunk.response.status ?? "completed" };
+      }
+
+      if (chunk.type === "response.failed" || chunk.type === "error") {
+        yield {
+          kind: "error",
+          message: chunk.response?.error?.message ?? chunk.error?.message ?? "response stream failed",
+        };
       }
     }
 

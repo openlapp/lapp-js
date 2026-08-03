@@ -27,6 +27,7 @@ export function readStable<T>(
   rootDir: string,
   read: () => T,
   options: StableReadOptions = {},
+  computeRevision: (rootDir: string) => string = computeProfileRevision,
 ): { value: T; revision: string } {
   const attempts = options.attempts ?? 3;
   if (!Number.isSafeInteger(attempts) || attempts <= 0 || attempts > 3) {
@@ -37,14 +38,14 @@ export function readStable<T>(
       const initialLock = inspectWriterLock(options.lock);
       if (initialLock.locked) continue;
     }
-    const before = computeProfileRevision(rootDir);
+    const before = computeRevision(rootDir);
     try {
       const value = read();
-      const after = computeProfileRevision(rootDir);
+      const after = computeRevision(rootDir);
       const writerAppeared = !options.lockHeld && inspectWriterLock(options.lock).locked;
       if (before === after && !writerAppeared) return { value, revision: after };
     } catch (error) {
-      const unchanged = before === computeProfileRevision(rootDir);
+      const unchanged = before === computeRevision(rootDir);
       const writerAppeared = !options.lockHeld && inspectWriterLock(options.lock).locked;
       if (unchanged && !writerAppeared) throw error;
     }

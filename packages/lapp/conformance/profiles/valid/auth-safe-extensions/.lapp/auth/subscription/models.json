@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "extensions": {
+    "display": { "group": "subscriptions" },
+    "tokenEndpoint": "https://auth.example.test/oauth/token"
+  },
+  "models": [{
+    "id": "grok-test",
+    "extensions": {
+      "display": { "badge": "new" },
+      "deviceCodeUrl": "https://auth.example.test/device/code"
+    }
+  }]
+}

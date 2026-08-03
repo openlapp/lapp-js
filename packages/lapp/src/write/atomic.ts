@@ -128,6 +128,11 @@ function profileFiles(profile: LappProfile, root: string): Map<string, unknown> 
     files.set(path.join(dir, "provider.json"), provider.config);
     files.set(path.join(dir, "models.json"), provider.models);
   }
+  for (const source of profile.auth ?? []) {
+    const dir = path.join(root, "auth", source.config.id);
+    files.set(path.join(dir, "auth.json"), source.config);
+    files.set(path.join(dir, "models.json"), source.models);
+  }
   if (profile.global) files.set(path.join(root, "global.json"), profile.global);
   return files;
 }
@@ -256,13 +261,37 @@ function removedProviderDirectories(
     .sort((left, right) => compareManagedPaths(root, left, right));
 }
 
+function removedAuthDirectories(
+  before: LappProfile | null | undefined,
+  next: LappProfile,
+  root: string,
+): string[] {
+  // `undefined` means the caller used the provider-only compatibility shape;
+  // never infer deletion of an Auth tree it did not load.
+  if (!before?.auth || next.auth === undefined) return [];
+  const retained = new Set(next.auth.map((source) => source.config.id));
+  return before.auth
+    .filter((source) => !retained.has(source.config.id))
+    .map((source) => path.join(root, "auth", source.config.id))
+    .sort((left, right) => compareManagedPaths(root, left, right));
+}
+
 const MANAGED_PROVIDER_FILE_NAMES = new Set(["provider.json", "models.json"]);
+const MANAGED_AUTH_FILE_NAMES = new Set(["auth.json", "models.json"]);
 
 function assertProviderDirectoryHasOnlyManagedFiles(root: string, directory: string): void {
   const safeDirectory = assertContained(root, directory);
   const entries = fs.readdirSync(safeDirectory);
   if (entries.some((entry) => !MANAGED_PROVIDER_FILE_NAMES.has(entry))) {
     throw new Error(`provider directory contains unmanaged content and cannot be removed: ${safeDirectory}`);
+  }
+}
+
+function assertAuthDirectoryHasOnlyManagedFiles(root: string, directory: string): void {
+  const safeDirectory = assertContained(root, directory);
+  const entries = fs.readdirSync(safeDirectory);
+  if (entries.some((entry) => !MANAGED_AUTH_FILE_NAMES.has(entry))) {
+    throw new Error(`auth directory contains unmanaged content and cannot be removed: ${safeDirectory}`);
   }
 }
 
@@ -467,14 +496,22 @@ export async function writeProfileAtomic(
   const writes = actions.filter((action): action is PlannedWrite => action.kind === "write");
   const directoriesToCreate = requiredDirectories(root, writes)
     .filter((directory) => !directoryExists(root, directory));
-  const directoriesToRemove = removedProviderDirectories(options.before, profile, root)
+  const providerDirectoriesToRemove = removedProviderDirectories(options.before, profile, root)
     .filter((directory) => directoryExists(root, directory));
+  const authDirectoriesToRemove = removedAuthDirectories(options.before, profile, root)
+    .filter((directory) => directoryExists(root, directory));
+  const directoriesToRemove = [...providerDirectoriesToRemove, ...authDirectoriesToRemove]
+    .sort((left, right) => compareManagedPaths(root, left, right));
 
   // Refuse the entire proposal before its first side effect when deleting a
   // provider would strand content that LAPP does not manage. A second check in
   // the commit phase below detects content introduced after this preflight.
-  for (const directory of directoriesToRemove) {
-    assertProviderDirectoryHasOnlyManagedFiles(root, directory);
+    for (const directory of directoriesToRemove) {
+      if (path.basename(path.dirname(directory)) === "auth") {
+        assertAuthDirectoryHasOnlyManagedFiles(root, directory);
+      } else {
+        assertProviderDirectoryHasOnlyManagedFiles(root, directory);
+      }
   }
   const journal: JournalEntry[] = [];
 

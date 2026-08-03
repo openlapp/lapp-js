@@ -18,7 +18,7 @@ import {
   withWriterLock,
   type WriterLockOptions,
 } from "../writer/lock.js";
-import { computeProfileRevision } from "./revision.js";
+import { computeProfileRevision, computeRegistryRevision } from "./revision.js";
 
 export interface ManagerPendingVaultWrite {
   ref: string;
@@ -39,6 +39,8 @@ interface CommitManagerTransactionOptions {
   vaultDeleteRef?: string;
   /** Required CAS revision checked after locking and immediately before mutation. */
   expectedRevision: string;
+  /** @internal Selects the frozen v1 or additive v2 revision domain. */
+  revisionKind?: "profile" | "registry";
   /** @internal The caller already owns the current-user global writer lock. */
   lockHeld?: boolean;
   /** @internal Advance manager-owned Vault CAS state immediately before mutation. */
@@ -55,9 +57,11 @@ export interface CommitManagerTransactionResult {
 
 export type CommitProfileTransactionOptions = Omit<
   CommitManagerTransactionOptions,
-  "lockHeld" | "beforeVaultMutation"
+  "lockHeld" | "beforeVaultMutation" | "revisionKind"
 >;
 export type CommitProfileTransactionResult = CommitManagerTransactionResult;
+export type CommitRegistryTransactionOptions = CommitProfileTransactionOptions;
+export type CommitRegistryTransactionResult = CommitManagerTransactionResult;
 
 export class ProfileRevisionConflictError extends Error {
   override name = "ProfileRevisionConflictError";
@@ -97,6 +101,19 @@ export function commitProfileTransaction(
     ...(options as CommitManagerTransactionOptions),
     lockHeld: false,
     beforeVaultMutation: undefined,
+    revisionKind: "profile",
+  });
+}
+
+/** Commit a LAPP 1.1 Provider + Auth registry mutation under revision-v2 CAS. */
+export function commitRegistryTransaction(
+  options: CommitRegistryTransactionOptions,
+): Promise<CommitRegistryTransactionResult> {
+  return commitManagerTransaction({
+    ...(options as CommitManagerTransactionOptions),
+    lockHeld: false,
+    beforeVaultMutation: undefined,
+    revisionKind: "registry",
   });
 }
 
@@ -105,7 +122,9 @@ async function commitManagerTransactionLocked(
 ): Promise<CommitManagerTransactionResult> {
   const writeProfile = options.writeProfile ?? writeProfileAtomic;
   const assertExpectedRevision = (): void => {
-    const currentRevision = computeProfileRevision(options.rootDir);
+    const currentRevision = options.revisionKind === "registry"
+      ? computeRegistryRevision(options.rootDir)
+      : computeProfileRevision(options.rootDir);
     if (currentRevision !== options.expectedRevision) {
       throw new ProfileRevisionConflictError(currentRevision);
     }

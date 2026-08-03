@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.1",
+  "defaults": {
+    "chat": {
+      "providerId": "primary",
+      "authId": "primary",
+      "modelId": "chat"
+    }
+  }
+}

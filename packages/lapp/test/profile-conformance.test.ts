@@ -6,6 +6,7 @@ import {
   inspectProfile,
   loadProfile,
   ProfileValidationError,
+  readRegistryStable,
   type Diagnostic,
 } from "../src/index.js";
 
@@ -34,6 +35,35 @@ function tuples(diagnostics: readonly Diagnostic[]): Array<[string, string | und
   ]);
 }
 
+function hasManagedAuth(directory: string): boolean {
+  try {
+    fs.lstatSync(path.join(directory, "auth"));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function loadCanonicalProfile(directory: string): void {
+  if (hasManagedAuth(directory)) {
+    readRegistryStable({ path: directory });
+    return;
+  }
+  loadProfile({ path: directory });
+}
+
+function canonicalDiagnostics(directory: string): readonly Diagnostic[] {
+  if (!hasManagedAuth(directory)) return inspectProfile({ path: directory }).diagnostics;
+  try {
+    readRegistryStable({ path: directory });
+    return [];
+  } catch (error) {
+    if (error instanceof ProfileValidationError) return error.diagnostics;
+    throw error;
+  }
+}
+
 const validProfiles = [
   ...findProfileRoots(path.join(fixtureRoot, "valid")),
   ...findProfileRoots(path.join(fixtureRoot, "examples")),
@@ -44,15 +74,15 @@ describe("canonical profile fixture acceptance", () => {
   it.each(validProfiles.map((directory) => [label(directory), directory]))(
     "accepts %s",
     (_name, directory) => {
-      expect(() => loadProfile({ path: directory })).not.toThrow();
+      expect(() => loadCanonicalProfile(directory)).not.toThrow();
     },
   );
 
   it.each(invalidProfiles.map((directory) => [label(directory), directory]))(
     "rejects %s with only coded diagnostics",
     (_name, directory) => {
-      expect(() => loadProfile({ path: directory })).toThrow(ProfileValidationError);
-      const diagnostics = inspectProfile({ path: directory }).diagnostics;
+      expect(() => loadCanonicalProfile(directory)).toThrow(ProfileValidationError);
+      const diagnostics = canonicalDiagnostics(directory);
       expect(diagnostics.some((entry) => entry.level === "ERROR")).toBe(true);
       expect(diagnostics.every((entry) => typeof entry.code === "string" && entry.code.length > 0))
         .toBe(true);

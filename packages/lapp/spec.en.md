@@ -1,6 +1,6 @@
-# LAPP v1 Specification
+# LAPP 1.1 Specification
 
-LAPP (Local AI Provider Profiles) is a local provider registry for AI applications. It lets an application discover configured models, resolve the selected model to an upstream URL and credential, and then communicate with that upstream directly.
+LAPP (Local AI Provider Profiles) is a local model-source registry for AI applications. LAPP 1.0 defines API-key-style providers. LAPP 1.1 adds Auth Model Sources for user-authorized subscriptions while retaining every valid LAPP 1.0 provider profile.
 
 LAPP is a file convention. It does not define a daemon, gateway, proxy, routing service, billing system, or remote control plane. Applications may read the files themselves or use an SDK or CLI that implements this specification.
 
@@ -14,16 +14,36 @@ The default root is `~/.lapp`. An application may support `LAPP_HOME`; when set,
 │   └── <providerId>/
 │       ├── provider.json
 │       └── models.json
+├── auth/
+│   └── <authId>/
+│       ├── auth.json
+│       └── models.json
 └── global.json
 ```
 
 - `providers/` contains one directory per provider.
 - Every provider directory contains both `provider.json` and `models.json`.
+- LAPP 1.1 `auth/` contains one directory per Auth Model Source. Every auth
+  directory contains both `auth.json` and `models.json`.
 - `global.json` is optional.
 - LAPP v1 files are I-JSON encoded as UTF-8. JSONC and alternate extensions are not supported.
 - `manifest.json` has no LAPP v1 semantics.
 
-All three documents require `"schemaVersion": "1.0"`. Implementations must reject unsupported versions. Core objects reject unknown properties; implementation-specific data belongs under `extensions`.
+LAPP 1.0 `provider.json`, `models.json`, and `global.json` keep
+`"schemaVersion": "1.0"` and their frozen schemas. LAPP 1.1 introduces
+`auth.json` and the extended `global.json` with `"schemaVersion": "1.1"`;
+auth-owned `models.json` deliberately reuses the unchanged 1.0 models schema.
+The schema version is a document version, so this controlled combination is
+valid. Implementations must reject every other combination and unsupported
+version. Core objects reject unknown properties; implementation-specific data
+belongs under `extensions`.
+
+A profile containing `auth/` must contain a valid 1.1 `global.json`; otherwise
+it is invalid with `AUTH_REQUIRES_GLOBAL_1_1`. In a 1.0 profile, `providers/`
+remains required and `auth/` is forbidden. In a 1.1 profile, `providers/` and
+`auth/` are independently optional, but at least one must be a directory. This
+version gate ensures a conforming 1.0 reader or writer rejects an auth-bearing
+profile instead of silently ignoring subscription state.
 
 Every object member name must be unique after JSON escape processing. Strings
 must contain only Unicode scalar values. Numbers must be finite IEEE 754
@@ -53,15 +73,15 @@ the current OS user. The one normative writer lock is
 
 ## Identifiers
 
-A provider ID must match:
+A provider ID or auth ID must match:
 
 ```text
 ^[a-z0-9][a-z0-9._-]{0,63}$
 ```
 
-It must not be a Windows reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, or `LPT1`–`LPT9`, case-insensitive), including a reserved basename followed by an extension, and must not end with a dot. The provider directory name must exactly equal `provider.id`. Implementations must reject invalid IDs; they must not sanitize IDs into filesystem names.
+It must not be a Windows reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, or `LPT1`–`LPT9`, case-insensitive), including a reserved basename followed by an extension, and must not end with a dot. The provider directory name must exactly equal `provider.id`, and the auth directory name must exactly equal `auth.id`. Implementations must reject invalid IDs; they must not sanitize IDs into filesystem names. Provider IDs and auth IDs occupy separate tagged namespaces and may be equal.
 
-A model ID is the exact string sent upstream. It may contain `/`, but must not be empty, whitespace-only, or contain control characters. Within one provider, every model ID and alias shares one namespace and must be unique.
+A model ID is the exact string sent upstream. It may contain `/`, but must not be empty, whitespace-only, or contain control characters. Within one provider or Auth Model Source, every model ID and alias shares one namespace and must be unique.
 
 ## provider.json
 
@@ -238,6 +258,57 @@ Remote refresh is an explicit operation. It must:
 
 A valid empty response makes no changes. Refresh appends previously unknown model IDs, sorted by ID, after existing entries. It may fill a missing local display name, but must not overwrite any existing local field and must never remove a local model.
 
+## auth.json
+
+LAPP 1.1 Auth Model Sources describe models reached through a user-authorized
+runtime driver rather than a static provider URL and API-key shape:
+
+```json
+{
+  "schemaVersion": "1.1",
+  "id": "codex-personal",
+  "name": "Codex Personal",
+  "driver": "openai-codex",
+  "enabled": true,
+  "protocols": ["openai-responses"],
+  "config": {
+    "originator": "openlapp"
+  }
+}
+```
+
+`schemaVersion`, `id`, `driver`, and `protocols` are required. `name` is an
+optional non-empty display name, and `enabled` defaults to `true`. `driver`
+matches `^[a-z0-9][a-z0-9._-]{0,63}$` and is the explicit runtime adapter key;
+implementations must not infer it from the auth ID, model ID, or configuration.
+`protocols` is a non-empty ordered list using the same protocol-ID grammar as a
+provider. `config` and `extensions`, when present, are I-JSON objects whose
+unknown members are preserved losslessly. `config` and `extensions` are
+non-secret metadata: recursively, their keys must not be credential-bearing
+names after case-folding and removing ASCII separators. The same policy applies
+to top-level and per-model `extensions` in an Auth source's `models.json`. This rejects a key containing the
+credential families `token`, `secret`, `password`, `passphrase`, `apiKey`,
+`privateKey`, `accessKey`, `sessionKey`, `signingKey`, `credential`, `cookie`,
+or `authorization`, plus OAuth temporary credential names such as `authorizationCode`,
+`deviceCode`, `codeVerifier`, `deviceAuthId`, and `userCode`. The only
+sensitive-family exceptions are the exact public metadata keys
+`tokenEndpoint` and `deviceCodeUrl`; `clientId`, `discoveryUrl`, `modelsUrl`,
+`inferenceBaseUrl`, `issuer`, `scope`, `reasoningEffort`, and `accountId`
+remain valid.
+
+`auth.json` is model-source metadata, not a token file. Access tokens, refresh
+tokens, cookies, authorization codes, and other usable credentials must not be
+stored in `config`, `extensions`, Auth source `models.json` extensions,
+diagnostics, or logs. A runtime
+driver stores and refreshes its private authorization state in an appropriate
+current-user protected store. Profile validation and model listing never invoke
+the driver, resolve authorization state, or access the network.
+
+An implementation may read and list an Auth Model Source without implementing
+its driver. Attempting to execute an unknown or unavailable driver must fail
+explicitly as unsupported; it must not reinterpret the source as a provider,
+guess a URL, or fall back to another credential.
+
 ## models.json
 
 ```json
@@ -278,7 +349,9 @@ text-to-speech uses the same output modality and the `text-to-speech`
 capability. `type` remains opaque descriptive metadata and is not a routing
 key.
 
-When `protocols` is present, it must be a non-empty subset of the provider's protocols. When absent, the model inherits the provider's ordered protocols.
+When `protocols` is present, it must be a non-empty subset of its owning
+provider's or Auth Model Source's protocols. When absent, the model inherits the
+owner's ordered protocols.
 
 `models.json` is the local authoritative catalog. Remote provider results are discovery input, not a second source of truth. Applications must not infer capabilities from a model name.
 
@@ -303,27 +376,47 @@ remain allowed.
 
 A default must reference an existing enabled provider and enabled model by canonical ID. Aliases must not be stored in `global.json`. A missing `global.json` is valid.
 
+LAPP 1.1 changes only the reference and document version. A
+`RegistryModelRef` is exactly one of these closed objects:
+
+```json
+{ "providerId": "deepseek", "modelId": "deepseek-v4-flash" }
+{ "authId": "codex-personal", "modelId": "gpt-5-codex" }
+```
+
+The two selector fields are mutually exclusive. A reference containing both,
+neither, or any unknown member is invalid. Provider references retain their
+1.0 meaning. Auth references must name an existing enabled Auth Model Source
+and an enabled canonical model ID; aliases are forbidden. A 1.1 `defaults`
+object may be empty, allowing sources to be registered before a default is
+chosen.
+
 ## Connection resolution
 
-Given either `{ providerId, model }` or a default operation name, an implementation must:
+Given a provider/auth model selection or a default operation name, an implementation must:
 
 1. resolve the default, if requested;
-2. require an existing enabled provider;
-3. resolve `model` against the provider's model IDs and aliases, rejecting ambiguity;
+2. follow the tagged selector and require an existing enabled provider or Auth Model Source;
+3. resolve `model` against that source's model IDs and aliases, rejecting ambiguity;
 4. require an enabled model and normalize aliases to its canonical ID;
 5. select a protocol using the ordered intersection rule above;
-6. validate the URL and static headers;
-7. resolve the configured secret, enforce any Vault binding, and construct exactly one auth mechanism;
-8. return the canonical provider ID, model ID, protocol, base URL, headers, and in-memory auth value.
+6. for a provider, validate the URL and static headers, resolve the configured
+   secret, enforce any Vault binding, and construct exactly one auth mechanism;
+7. for an Auth Model Source, return the canonical auth ID, driver, model ID,
+   protocol, and preserved config without loading driver authorization state;
+8. let the selected provider adapter or auth driver perform the request.
 
-Reading the model list must not resolve secrets or access the network. Only connection resolution and explicit refresh need credentials.
+Reading or resolving the model list must not resolve secrets, load driver
+tokens, or access the network. Provider connection execution and explicit
+provider refresh may resolve credentials; auth execution resolves driver state
+just in time.
 
 ## Validation and diagnostics
 
 Implementations must enforce I-JSON, validate each file against its versioned
 schema, and only then apply semantic rules. Unknown, malformed, or unsupported
-v1 data must be rejected; LAPP 1.0 has no compatibility or migration layer for
-earlier drafts. An existing managed document path that is not a regular file,
+1.0/1.1 data must be rejected; LAPP 1.0 remains frozen and LAPP 1.1 is an
+explicit additive version, not a reinterpretation of 1.0. An existing managed document path that is not a regular file,
 including a symbolic link or directory, is rejected with `NON_REGULAR_FILE`.
 
 A conformance diagnostic is identified only by `(level, code, location)`:
@@ -336,7 +429,8 @@ A conformance diagnostic is identified only by `(level, code, location)`:
 Locations must not be absolute, start with `./`, or contain backslashes. A
 file-wide diagnostic uses only the path. A member diagnostic uses the exact
 decoded member path, escaping `~` as `~0` and `/` as `~1`; for example,
-`providers/deepseek/provider.json#/auth/secret`. Human-readable messages may be
+`providers/deepseek/provider.json#/auth/secret` or
+`auth/codex-personal/auth.json#/driver`. Human-readable messages may be
 localized, and diagnostic order may vary. Neither message text nor order is
 part of conformance. Secret values, Vault envelopes, and unsanitized native
 errors must never appear in any diagnostic field.
@@ -346,6 +440,8 @@ errors must never appear in any diagnostic field.
 The profile revision is an opaque compare-and-swap value computed from exact
 managed bytes and relevant file states. Its text form is `sha256:` followed by
 64 lower-case hexadecimal digits. Callers must compare it only for equality.
+
+### Revision-v1 (frozen LAPP 1.0)
 
 The SHA-256 input begins with the ASCII domain bytes
 `lapp-profile-revision-v1` followed by one NUL byte. It then contains a
@@ -378,11 +474,33 @@ POSIX filename fails revision computation with `PROFILE_PATH_INVALID`; it must
 not be decoded with replacement characters. Writers must never create such a
 name. Valid LAPP provider IDs are ASCII and therefore always satisfy this rule.
 
+### Revision-v2 (LAPP 1.1)
+
+Revision-v2 uses the same framing, state bytes, exact-content rules, UTF-8
+ordering, and `sha256:` text form. Its domain is the ASCII bytes
+`lapp-profile-revision-v2` followed by one NUL byte. Its record set always
+contains `global.json`, `providers`, and `auth`. Provider records are identical
+to revision-v1. When `auth` is a directory, the set additionally contains one
+structural record for every direct auth directory and the managed paths
+`auth/<name>/auth.json` and `auth/<name>/models.json` for each such directory.
+No deeper entry or driver token-store record is included.
+
+The frozen vectors are in
+[`tools/validator/fixtures/conformance/revision-v2.json`](https://github.com/openlapp/lapp/blob/main/tools/validator/fixtures/conformance/revision-v2.json).
+Implementations must not add auth paths to revision-v1 or reuse the revision-v1
+domain for 1.1. A 1.1 snapshot uses revision-v2; a backward-compatible reader
+loading a 1.0 profile continues to expose revision-v1.
+
 ## Stable reads
 
 A reader that returns a complete profile or snapshot must perform a stable
 read, whether or not the caller intends to mutate it. By default it makes at
 most three complete attempts. Each attempt must:
+
+The attempt brackets a 1.0 profile with revision-v1 and a 1.1 profile with
+revision-v2. A reader supporting both versions may compute both candidate
+revisions around the read, then compare only the pair selected by the validated
+`global.json`; it must never compare a revision-v1 value with revision-v2.
 
 1. verify that `writer-v1.lock` does not exist;
 2. compute `revisionBefore`;
@@ -480,15 +598,21 @@ rejected. A changed file is written to a restrictive temporary sibling, flushed,
 and atomically renamed; the containing directory is flushed where the platform
 supports it. Unchanged files must not be rewritten. Multiple changed profile
 paths are committed in the same UTF-8 bytewise order used by the revision.
-Required provider directories are created in that order before their files.
-A provider directory is removed only after both managed files are removed and
+Required provider and auth directories are created in that order before their
+files. A provider or auth directory is removed only after both managed files are removed and
 only if it is empty; a writer must never recursively delete unknown content.
-Before the first side effect, removing a provider must fail the entire commit
+Before the first side effect, removing a provider or Auth Model Source must fail the entire commit
 without mutation if its directory contains any entry other than the two
 managed regular files. The writer must check emptiness again immediately before
 removing the directory; a newly non-empty directory is a profile-step failure
 that triggers rollback, never a successful commit with orphaned content.
 Directory actions participate in the same reverse actual-action rollback.
+
+Adding the first Auth Model Source to a 1.0 profile is one explicit CAS
+transaction: it writes the auth documents and creates or upgrades `global.json`
+to 1.1, then returns the revision-v2 result. A conforming writer never creates
+`auth/` while leaving a 1.0 or missing `global.json`. Removing the last auth
+source does not implicitly downgrade the profile or revision algorithm.
 
 Before the first side effect, the writer must preserve the exact prior state of
 every affected profile path and Vault record, including presence versus

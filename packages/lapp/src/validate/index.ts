@@ -5,8 +5,9 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { parseSecretRef, parseVaultSecretRef } from "../secret/index.js";
 import { inspectIJsonValue } from "../json/ijson.js";
-import { providerDirectory } from "../profile-location.js";
+import { authDirectory, providerDirectory } from "../profile-location.js";
 import type {
+  AuthSource,
   Diagnostic,
   LappProfile,
   LappProvider,
@@ -25,8 +26,48 @@ const SCHEMA_IDS = {
   provider: "https://lapp.dev/schema/1.0/provider.schema.json",
   models: "https://lapp.dev/schema/1.0/models.schema.json",
   global: "https://lapp.dev/schema/1.0/global.schema.json",
+  global11: "https://lapp.dev/schema/1.1/global.schema.json",
+  auth: "https://lapp.dev/schema/1.1/auth.schema.json",
 } as const;
+const SCHEMA_FILES: Record<keyof typeof SCHEMA_IDS, string> = {
+  provider: "provider.schema.json",
+  models: "models.schema.json",
+  global: "global.schema.json",
+  global11: "global-1.1.schema.json",
+  auth: "auth.schema.json",
+};
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SENSITIVE_AUTH_CONFIG_FAMILIES = [
+  "token",
+  "apikey",
+  "secret",
+  "password",
+  "passphrase",
+  "privatekey",
+  "accesskey",
+  "sessionkey",
+  "signingkey",
+  "credential",
+  "cookie",
+  "authorization",
+  "authorizationcode",
+  "devicecode",
+  "codeverifier",
+  "deviceauthid",
+  "usercode",
+];
+const PUBLIC_AUTH_CONFIG_KEYS = new Set([
+  "tokenendpoint",
+  "devicecodeurl",
+  "clientid",
+  "discoveryurl",
+  "modelsurl",
+  "inferencebaseurl",
+  "issuer",
+  "scope",
+  "reasoningeffort",
+  "accountid",
+]);
 
 let validators: Record<keyof typeof SCHEMA_IDS, ValidateFunction> | undefined;
 
@@ -48,7 +89,7 @@ function getValidators(): Record<keyof typeof SCHEMA_IDS, ValidateFunction> {
   const dir = schemaDirectory();
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   for (const name of Object.keys(SCHEMA_IDS) as Array<keyof typeof SCHEMA_IDS>) {
-    const schema = JSON.parse(fs.readFileSync(path.join(dir, `${name}.schema.json`), "utf8"));
+    const schema = JSON.parse(fs.readFileSync(path.join(dir, SCHEMA_FILES[name]), "utf8"));
     ajv.addSchema(schema);
   }
   validators = Object.fromEntries(
@@ -88,7 +129,7 @@ function schemaDiagnostics(
     }
     diagnostics.push({
       level: "ERROR",
-      code: `SCHEMA_${name.toUpperCase()}`,
+      code: `SCHEMA_${name === "global11" ? "GLOBAL" : name.toUpperCase()}`,
       location: pointer ? `${location}#${pointer}` : location,
       message: `${name}.json schema: ${error.message ?? "invalid"}`,
     });
@@ -274,7 +315,110 @@ function profileIJsonLocation(profile: LappProfile, pointer: string): string {
     const file = provider[2] === "config" ? "provider.json" : "models.json";
     return `providers/${directory}/${file}${provider[3] ? `#${provider[3]}` : ""}`;
   }
+  const auth = pointer.match(/^\/auth\/([0-9]+)\/(config|models)(\/.*)?$/);
+  if (auth) {
+    const index = Number(auth[1]);
+    const id = profile.auth?.[index]?.config?.id;
+    const directory = typeof id === "string" && isValidProviderId(id) ? id : `auth-${index}`;
+    const file = auth[2] === "config" ? "auth.json" : "models.json";
+    return `auth/${directory}/${file}${auth[3] ? `#${auth[3]}` : ""}`;
+  }
   return pointer ? `#${pointer}` : ".";
+}
+
+function normalizeAuthConfigKey(key: string): string {
+  return key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+}
+
+function isSensitiveAuthConfigKey(key: string): boolean {
+  const normalized = normalizeAuthConfigKey(key);
+  // These are reviewed public driver metadata names. Any derivative such as
+  // `tokenEndpointSecret` falls through to the family check below.
+  if (PUBLIC_AUTH_CONFIG_KEYS.has(normalized)) return false;
+  return SENSITIVE_AUTH_CONFIG_FAMILIES.some((family) => normalized.includes(family));
+}
+
+function validateAuthConfig(
+  value: unknown,
+  location: string,
+  diagnostics: Diagnostic[],
+  container = "auth.config",
+): void {
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      validateAuthConfig(entry, `${location}/${index}`, diagnostics, container);
+    }
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const keyLocation = `${location}/${escapePointerSegment(key)}`;
+    if (isSensitiveAuthConfigKey(key)) {
+      diagnostics.push({
+        level: "ERROR",
+        code: "SENSITIVE_AUTH_CONFIG_KEY",
+        location: keyLocation,
+        message: `${container} must not contain credential-bearing key "${key}"`,
+      });
+    }
+    validateAuthConfig(entry, keyLocation, diagnostics, container);
+  }
+}
+
+function validateAuthSource(source: AuthSource, diagnostics: Diagnostic[]): void {
+  const directory = authDirectory(source);
+  const location = `auth/${directory}/auth.json`;
+  const schemaValid = schemaDiagnostics("auth", source.config, location, diagnostics);
+  const modelsLocation = `auth/${directory}/models.json`;
+  const modelsValid = schemaDiagnostics("models", source.models, modelsLocation, diagnostics);
+  if (!schemaValid || !modelsValid) return;
+  if (source.config.config !== undefined) {
+    validateAuthConfig(source.config.config, `${location}#/config`, diagnostics);
+  }
+  if (source.models.extensions !== undefined) {
+    validateAuthConfig(source.models.extensions, `${modelsLocation}#/extensions`, diagnostics, "Auth models.json extensions");
+  }
+  if (!isValidProviderId(source.config.id)) {
+    diagnostics.push({
+      level: "ERROR",
+      code: "INVALID_AUTH_ID",
+      location: `${location}#/id`,
+      message: `invalid auth id "${source.config.id}"`,
+    });
+  }
+  const protocols = new Set(source.config.protocols);
+  const owners = new Map<string, string>();
+  for (const [modelIndex, model] of source.models.models.entries()) {
+    const modelLocation = `${modelsLocation}#/models/${modelIndex}`;
+    if (model.extensions !== undefined) {
+      validateAuthConfig(model.extensions, `${modelLocation}/extensions`, diagnostics, "Auth model extensions");
+    }
+    for (const [identityIndex, identity] of [model.id, ...(model.aliases ?? [])].entries()) {
+      const previous = owners.get(identity);
+      if (previous) {
+        diagnostics.push({
+          level: "ERROR",
+          code: "DUPLICATE_AUTH_MODEL_IDENTITY",
+          location: identityIndex === 0
+            ? `${modelLocation}/id`
+            : `${modelLocation}/aliases/${identityIndex - 1}`,
+          message: `model id or alias "${identity}" is already owned by "${previous}"`,
+        });
+      } else {
+        owners.set(identity, model.id);
+      }
+    }
+    for (const [protocolIndex, protocol] of (model.protocols ?? []).entries()) {
+      if (!protocols.has(protocol)) {
+        diagnostics.push({
+          level: "ERROR",
+          code: "AUTH_MODEL_PROTOCOL_NOT_DECLARED",
+          location: `${modelLocation}/protocols/${protocolIndex}`,
+          message: `model protocol "${protocol}" is not declared by auth source`,
+        });
+      }
+    }
+  }
 }
 
 function validateProvider(provider: LappProvider, diagnostics: Diagnostic[]): void {
@@ -349,9 +493,47 @@ function validateProvider(provider: LappProvider, diagnostics: Diagnostic[]): vo
 
 function validateGlobal(profile: LappProfile, diagnostics: Diagnostic[]): void {
   if (!profile.global) return;
-  if (!schemaDiagnostics("global", profile.global, "global.json", diagnostics)) return;
+  const schemaName = profile.global.schemaVersion === "1.1" ? "global11" : "global";
+  if (!schemaDiagnostics(schemaName, profile.global, "global.json", diagnostics)) return;
   for (const [task, ref] of Object.entries(profile.global.defaults)) {
     const location = `global.json#/defaults/${escapePointerSegment(task)}`;
+    if ("authId" in ref) {
+      const source = profile.auth?.find((entry) => entry.config.id === ref.authId);
+      if (!source) {
+        diagnostics.push({
+          level: "ERROR",
+          code: "DEFAULT_AUTH_NOT_FOUND",
+          location: `${location}/authId`,
+          message: `auth source "${ref.authId}" does not exist`,
+        });
+        continue;
+      }
+      if (source.config.enabled === false) {
+        diagnostics.push({
+          level: "ERROR",
+          code: "DEFAULT_AUTH_DISABLED",
+          location: `${location}/authId`,
+          message: `auth source "${ref.authId}" is disabled`,
+        });
+      }
+      const model = source.models.models.find((entry) => entry.id === ref.modelId);
+      if (!model) {
+        diagnostics.push({
+          level: "ERROR",
+          code: "DEFAULT_MODEL_NOT_FOUND",
+          location: `${location}/modelId`,
+          message: `model "${ref.modelId}" does not exist`,
+        });
+      } else if (model.enabled === false) {
+        diagnostics.push({
+          level: "ERROR",
+          code: "DEFAULT_MODEL_DISABLED",
+          location: `${location}/modelId`,
+          message: `model "${ref.modelId}" is disabled`,
+        });
+      }
+      continue;
+    }
     const provider = profile.providers.find((entry) => entry.config.id === ref.providerId);
     if (!provider) {
       diagnostics.push({
@@ -420,6 +602,19 @@ export function validateProfile(profile: LappProfile): ValidationResult {
       }
       seenProviders.add(provider.config.id);
       validateProvider(provider, diagnostics);
+    }
+    const seenAuth = new Set<string>();
+    for (const source of profile.auth ?? []) {
+      if (seenAuth.has(source.config.id)) {
+        diagnostics.push({
+          level: "ERROR",
+          code: "DUPLICATE_AUTH_ID",
+          location: `auth/${source.config.id}`,
+          message: `duplicate auth id "${source.config.id}"`,
+        });
+      }
+      seenAuth.add(source.config.id);
+      validateAuthSource(source, diagnostics);
     }
     validateGlobal(profile, diagnostics);
   } catch {

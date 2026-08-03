@@ -5,19 +5,23 @@ import process from "node:process";
 import { redactSecret, parseSecretRef } from "../secret/index.js";
 import {
   ProfileValidationError,
+  type AuthSource,
+  type AuthSourceConfig,
   type Diagnostic,
   type GlobalConfig,
   type LappProfile,
   type LappProvider,
+  type LappRegistry,
   type ModelsConfig,
   type ProfileInspection,
   type ProviderConfig,
 } from "../types.js";
 import { validateProfile } from "../validate/index.js";
 import { isObject } from "../validate/constants.js";
-import { attachProfileRoot, attachProviderDirectory } from "../profile-location.js";
+import { attachAuthDirectory, attachProfileRoot, attachProviderDirectory } from "../profile-location.js";
 import { parseIJson } from "../json/ijson.js";
 import { readStable, type StableReadOptions } from "../writer/stable-read.js";
+import { computeRegistryRevision } from "../manager/revision.js";
 
 export interface LoadProfileOptions {
   path?: string;
@@ -110,7 +114,7 @@ interface ReadResult {
   diagnostics: Diagnostic[];
 }
 
-function readProfile(options: LoadProfileOptions): ReadResult {
+function readProfile(options: LoadProfileOptions, includeAuth = false): ReadResult {
   const rootDir = resolveLappRoot(options.path);
   const diagnostics: Diagnostic[] = [];
   const profile: LappProfile = attachProfileRoot({ providers: [] }, rootDir);
@@ -150,15 +154,19 @@ function readProfile(options: LoadProfileOptions): ReadResult {
   } catch {
     // Canonical MISSING_PROVIDERS below covers absence and inaccessible paths.
   }
-  if (!providersStat?.isDirectory()) {
-    addDiagnostic(diagnostics, "ERROR", "MISSING_PROVIDERS", "providers", "missing providers directory");
-    return { rootDir, profile, diagnostics };
-  }
-
-  const entries = fs.readdirSync(providersDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .sort((a, b) => Buffer.compare(Buffer.from(a.name, "utf8"), Buffer.from(b.name, "utf8")));
-  for (const entry of entries) {
+  if (!providersStat?.isDirectory() || providersStat.isSymbolicLink()) {
+    if (!includeAuth) {
+      addDiagnostic(diagnostics, "ERROR", "MISSING_PROVIDERS", "providers", "missing providers directory");
+      return { rootDir, profile, diagnostics };
+    }
+    if (providersStat !== undefined) {
+      addDiagnostic(diagnostics, "ERROR", "INVALID_PROVIDERS_DIRECTORY", "providers", "providers must be a real directory");
+    }
+  } else {
+    const entries = fs.readdirSync(providersDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .sort((a, b) => Buffer.compare(Buffer.from(a.name, "utf8"), Buffer.from(b.name, "utf8")));
+    for (const entry of entries) {
     const providerDir = path.join(providersDir, entry.name);
     const providerFile = path.join(providerDir, "provider.json");
     const providerJsonc = path.join(providerDir, "provider.jsonc");
@@ -221,10 +229,116 @@ function readProfile(options: LoadProfileOptions): ReadResult {
         );
       }
     }
-    profile.providers.push(attachProviderDirectory({
-      config: providerRaw as unknown as ProviderConfig,
-      models,
-    }, entry.name));
+      profile.providers.push(attachProviderDirectory({
+        config: providerRaw as unknown as ProviderConfig,
+        models,
+      }, entry.name));
+    }
+  }
+
+  if (includeAuth) {
+    const authDir = path.join(rootDir, "auth");
+    let authStat: fs.Stats | undefined;
+    try {
+      authStat = fs.lstatSync(authDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        addDiagnostic(diagnostics, "ERROR", "FILE_ACCESS_FAILED", "auth", "auth directory could not be inspected");
+      }
+    }
+    if (authStat !== undefined) {
+      if (!authStat.isDirectory() || authStat.isSymbolicLink()) {
+        addDiagnostic(diagnostics, "ERROR", "INVALID_AUTH_DIRECTORY", "auth", "auth must be a real directory");
+      } else {
+        profile.auth = [];
+        const authEntries = fs.readdirSync(authDir, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .sort((a, b) => Buffer.compare(Buffer.from(a.name, "utf8"), Buffer.from(b.name, "utf8")));
+        for (const entry of authEntries) {
+          const sourceDir = path.join(authDir, entry.name);
+          const authFile = path.join(sourceDir, "auth.json");
+          const modelsFile = path.join(sourceDir, "models.json");
+          for (const unsupported of [
+            path.join(sourceDir, "auth.jsonc"),
+            path.join(sourceDir, "models.jsonc"),
+          ]) {
+            if (fs.existsSync(unsupported)) {
+              addDiagnostic(
+                diagnostics,
+                "ERROR",
+                "UNSUPPORTED_FILE",
+                relative(rootDir, unsupported),
+                "JSONC is not supported in LAPP 1.1",
+              );
+            }
+          }
+          if (!requireRegularFile(authFile, rootDir, "auth.json", "MISSING_AUTH", diagnostics)) {
+            continue;
+          }
+          const authRaw = parseJson(authFile, rootDir, diagnostics);
+          if (!isObject(authRaw)) {
+            if (authRaw !== undefined) {
+              addDiagnostic(
+                diagnostics,
+                "ERROR",
+                "SCHEMA_AUTH",
+                relative(rootDir, authFile),
+                "auth.json must contain an object",
+              );
+            }
+            continue;
+          }
+          if (typeof authRaw.id === "string" && authRaw.id !== entry.name) {
+            addDiagnostic(
+              diagnostics,
+              "ERROR",
+              "AUTH_DIRECTORY_MISMATCH",
+              `${relative(rootDir, authFile)}#/id`,
+              `auth id "${authRaw.id}" does not match directory "${entry.name}"`,
+            );
+          }
+          let models: ModelsConfig = { schemaVersion: "1.0", models: [] };
+          if (requireRegularFile(modelsFile, rootDir, "models.json", "MISSING_AUTH_MODELS", diagnostics)) {
+            const modelsRaw = parseJson(modelsFile, rootDir, diagnostics);
+            if (isObject(modelsRaw)) models = modelsRaw as unknown as ModelsConfig;
+            else if (modelsRaw !== undefined) {
+              addDiagnostic(
+                diagnostics,
+                "ERROR",
+                "SCHEMA_MODELS",
+                relative(rootDir, modelsFile),
+                "models.json must contain an object",
+              );
+            }
+          }
+          const source: AuthSource = {
+            config: authRaw as unknown as AuthSourceConfig,
+            models,
+          };
+          profile.auth.push(attachAuthDirectory(source, entry.name));
+        }
+      }
+    }
+    const hasProviders = providersStat?.isDirectory() === true && !providersStat.isSymbolicLink();
+    const hasAuth = authStat?.isDirectory() === true && !authStat.isSymbolicLink();
+    if (profile.global?.schemaVersion !== "1.1" && authStat !== undefined) {
+      addDiagnostic(
+        diagnostics,
+        "ERROR",
+        "AUTH_REQUIRES_GLOBAL_1_1",
+        "auth",
+        "auth/ requires a valid global.json with schemaVersion 1.1",
+      );
+    }
+    if (profile.global?.schemaVersion === "1.1" && !hasProviders && !hasAuth) {
+      addDiagnostic(
+        diagnostics,
+        "ERROR",
+        "MISSING_REGISTRY",
+        ".",
+        "LAPP 1.1 requires providers/ or auth/ to be a directory",
+      );
+    }
   }
   return { rootDir, profile, diagnostics };
 }
@@ -243,13 +357,25 @@ function mergeDiagnostics(...groups: Diagnostic[][]): Diagnostic[] {
 
 /** @internal Perform exactly one unbracketed filesystem read. */
 export function loadProfileOnce(options: LoadProfileOptions = {}): LappProfile {
-  const read = readProfile(options);
+  const read = readProfile(options, false);
   const validation = validateProfile(read.profile);
   const diagnostics = mergeDiagnostics(read.diagnostics, validation.diagnostics);
   if (diagnostics.some((entry) => entry.level === "ERROR")) {
     throw new ProfileValidationError(diagnostics);
   }
   return read.profile;
+}
+
+/** @internal Perform one unbracketed LAPP 1.1 registry read. */
+export function loadRegistryOnce(options: LoadProfileOptions = {}): LappRegistry {
+  const read = readProfile(options, true);
+  const validation = validateProfile(read.profile);
+  const diagnostics = mergeDiagnostics(read.diagnostics, validation.diagnostics);
+  if (diagnostics.some((entry) => entry.level === "ERROR")) {
+    throw new ProfileValidationError(diagnostics, "invalid LAPP registry");
+  }
+  read.profile.auth ??= [];
+  return read.profile as LappRegistry;
 }
 
 export function loadProfile(options: LoadProfileOptions = {}): LappProfile {
@@ -265,6 +391,19 @@ export function readProfileStable(
     rootDir,
     () => loadProfileOnce(options),
     options.stableRead,
+  );
+}
+
+/** Read and validate one complete Provider + Auth registry snapshot using revision-v2. */
+export function readRegistryStable(
+  options: LoadProfileOptions = {},
+): { value: LappRegistry; revision: string } {
+  const rootDir = resolveLappRoot(options.path);
+  return readStable(
+    rootDir,
+    () => loadRegistryOnce(options),
+    options.stableRead,
+    computeRegistryRevision,
   );
 }
 

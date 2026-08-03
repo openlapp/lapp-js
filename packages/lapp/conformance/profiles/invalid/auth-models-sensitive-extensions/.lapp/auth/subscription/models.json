@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0",
+  "extensions": {
+    "nested": { "accessToken": "must-not-be-portable" }
+  },
+  "models": [{
+    "id": "grok-test",
+    "extensions": {
+      "nested": { "privateKey": "must-not-be-portable" }
+    }
+  }]
+}

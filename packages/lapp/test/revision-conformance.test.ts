@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  computeRegistryRevision,
   computeProfileRevision,
   ProfilePathInvalidError,
 } from "../src/index.js";
@@ -18,6 +19,13 @@ const revisionFixture = JSON.parse(fs.readFileSync(
   "utf8",
 )) as { vectors: RevisionVector[] };
 const expected = new Map(revisionFixture.vectors.map((vector) => [vector.name, vector.revision]));
+const registryRevisionFixture = JSON.parse(fs.readFileSync(
+  path.join(conformanceDirectory, "revision-v2.json"),
+  "utf8",
+)) as { vectors: RevisionVector[] };
+const registryExpected = new Map(
+  registryRevisionFixture.vectors.map((vector) => [vector.name, vector.revision]),
+);
 const roots: string[] = [];
 
 function temporaryRoot(): string {
@@ -81,4 +89,34 @@ describe("canonical profile revision vectors", () => {
       expect(() => computeProfileRevision(root)).toThrow(ProfilePathInvalidError);
     },
   );
+});
+
+describe("canonical registry revision vectors", () => {
+  it("matches missing-root and byte-exact auth-plus-provider vectors", () => {
+    const missing = path.join(temporaryRoot(), "does-not-exist");
+    expect(computeRegistryRevision(missing)).toBe(registryExpected.get("missing-root"));
+    expect(computeRegistryRevision(
+      path.join(conformanceDirectory, "revision-auth", ".lapp"),
+    )).toBe(registryExpected.get("auth-and-provider-profile"));
+  });
+
+  it("frames a non-file auth root as state 03", () => {
+    const root = temporaryRoot();
+    const target = path.join(root, "unmanaged-target");
+    fs.mkdirSync(target);
+    fs.symlinkSync(
+      target,
+      path.join(root, "auth"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    expect(computeRegistryRevision(root)).toBe(registryExpected.get("auth-root-non-file"));
+  });
+
+  it("frames missing and non-file auth source files", () => {
+    const root = temporaryRoot();
+    fs.mkdirSync(path.join(root, "auth", "a", "models.json"), { recursive: true });
+    expect(computeRegistryRevision(root)).toBe(
+      registryExpected.get("auth-missing-and-non-file"),
+    );
+  });
 });

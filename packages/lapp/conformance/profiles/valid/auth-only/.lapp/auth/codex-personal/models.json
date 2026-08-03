@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0",
+  "models": [
+    {
+      "id": "gpt-5-codex",
+      "name": "GPT-5 Codex",
+      "protocols": ["openai-responses"],
+      "capabilities": ["chat", "stream", "reasoning", "tool-call"],
+      "enabled": true
+    }
+  ]
+}

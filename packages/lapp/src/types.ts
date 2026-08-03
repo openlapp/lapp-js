@@ -1,6 +1,7 @@
 /** Public LAPP v1 profile and SDK types. */
 
 export type SchemaVersion = "1.0";
+export type RegistrySchemaVersion = "1.1";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -55,22 +56,65 @@ export interface ModelsConfig {
   extensions?: Extensions;
 }
 
+/** Provider-only reference retained for the LAPP 1.0 API surface. */
 export interface ModelRef {
   providerId: string;
   modelId: string;
 }
 
-export interface GlobalConfig {
-  schemaVersion: SchemaVersion;
-  defaults: Record<string, ModelRef>;
+export type ProviderModelRef = ModelRef;
+
+/** A model made available by a subscription/session-backed Auth source. */
+export interface AuthModelRef {
+  authId: string;
+  modelId: string;
+}
+
+/** LAPP 1.1 model reference. Exactly one source discriminator is present. */
+export type RegistryModelRef = ProviderModelRef | AuthModelRef;
+
+export interface AuthSourceConfig {
+  schemaVersion: RegistrySchemaVersion;
+  id: string;
+  name?: string;
+  driver: string;
+  enabled?: boolean;
+  protocols: string[];
+  /** Non-secret, driver-specific options. Token material never belongs here. */
+  config?: Record<string, JsonValue>;
   extensions?: Extensions;
 }
+
+export interface AuthSource {
+  config: AuthSourceConfig;
+  /** Auth sources reuse the canonical 1.0 models document. */
+  models: ModelsConfig;
+}
+
+export interface ProviderGlobalConfig {
+  schemaVersion: SchemaVersion;
+  defaults: Record<string, ProviderModelRef>;
+  extensions?: Extensions;
+}
+
+export interface RegistryGlobalConfig {
+  schemaVersion: RegistrySchemaVersion;
+  defaults: Record<string, RegistryModelRef>;
+  extensions?: Extensions;
+}
+
+export type GlobalConfig = ProviderGlobalConfig | RegistryGlobalConfig;
 
 /** A validated, normalized LAPP profile. */
 export interface LappProfile {
   global?: GlobalConfig;
   providers: LappProvider[];
+  /** Optional for source compatibility with provider-only LAPP 1.0 objects. */
+  auth?: AuthSource[];
 }
+
+/** A normalized LAPP 1.1 registry snapshot. */
+export type LappRegistry = Omit<LappProfile, "auth"> & { auth: AuthSource[] };
 
 export interface LappProvider {
   config: ProviderConfig;
@@ -130,6 +174,14 @@ export interface ProfileInspection {
       enabled: boolean;
     }>;
   }>;
+  auth?: Array<{
+    id: string;
+    name?: string;
+    driver: string;
+    enabled: boolean;
+    protocols: string[];
+    modelCount: number;
+  }>;
   global?: GlobalConfig;
   diagnostics: Diagnostic[];
 }
@@ -164,6 +216,111 @@ export interface ModelDescriptor {
   contextWindow?: number;
   maxOutputTokens?: number;
   extensions?: Extensions;
+}
+
+export interface AuthModelDescriptor {
+  authId: string;
+  authName?: string;
+  driver: string;
+  authEnabled: boolean;
+  modelId: string;
+  modelName?: string;
+  modelEnabled: boolean;
+  protocols: string[];
+  aliases?: string[];
+  type?: string;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  capabilities?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  extensions?: Extensions;
+}
+
+export type RegistryModelDescriptor =
+  | ({ source: "provider" } & ModelDescriptor)
+  | ({ source: "auth" } & AuthModelDescriptor);
+
+export type RegistryModelSelector = RegistryModelRef | { default: string };
+
+export type ResolvedModelTarget =
+  | {
+    source: "provider";
+    ref: ProviderModelRef;
+    connection: ConnectionPlan;
+  }
+  | {
+    source: "auth";
+    ref: AuthModelRef;
+    authId: string;
+    driver: string;
+    modelId: string;
+    protocol: string;
+    config: Record<string, JsonValue>;
+  };
+
+/** OS-vault payload for one subscription/session-backed Auth source. */
+export interface AuthEnvelopeV1 {
+  version: 1;
+  authId: string;
+  driver: string;
+  /** Digest of the portable auth.json definition this grant was issued for. */
+  configDigest: string;
+  /** Monotonic whole-envelope replacement generation. */
+  generation: number;
+  /** Opaque, driver-defined JSON credentials. Never interpreted by the registry layer. */
+  credentials: Record<string, JsonValue>;
+}
+
+export interface AuthTokenStatus {
+  authId: string;
+  exists: boolean;
+  driver?: string;
+  expiresAt?: string;
+  expired?: boolean;
+}
+
+export interface AuthTokenStore {
+  read(authId: string, options?: { signal?: AbortSignal }): Promise<AuthEnvelopeV1 | undefined>;
+  write(envelope: AuthEnvelopeV1, options?: { signal?: AbortSignal }): Promise<void>;
+  status(authId: string, options?: { signal?: AbortSignal }): Promise<AuthTokenStatus>;
+  delete(authId: string, options?: { signal?: AbortSignal }): Promise<boolean>;
+}
+
+export type AuthErrorCode =
+  | "AUTH_NOT_FOUND"
+  | "AUTH_DISABLED"
+  | "AUTH_MODEL_NOT_FOUND"
+  | "AUTH_DRIVER_NOT_SUPPORTED"
+  | "AUTH_LOGIN_REQUIRED"
+  | "AUTH_CONFIG_CHANGED"
+  | "AUTH_TOKEN_STORE_ERROR"
+  | "AUTH_SOURCE_NOT_FOUND"
+  | "AUTH_SOURCE_DISABLED"
+  | "AUTH_DRIVER_NOT_FOUND"
+  | "AUTH_NOT_LOGGED_IN"
+  | "AUTH_RECORD_INVALID"
+  | "AUTH_DRIVER_MISMATCH"
+  | "AUTH_BACKEND_UNAVAILABLE"
+  | "AUTH_ACCESS_DENIED"
+  | "AUTH_OPERATION_FAILED"
+  | "AUTH_LOGIN_FAILED"
+  | "AUTH_REFRESH_FAILED"
+  | "AUTH_HTTP_ERROR"
+  | "AUTH_LOCKED"
+  | "AUTH_LOCK_INVALID"
+  | "AUTH_OPERATION_UNSUPPORTED";
+
+/** Deliberately redacted Auth/session failure. */
+export class AuthError extends Error {
+  override name = "AuthError";
+  constructor(
+    public readonly code: AuthErrorCode,
+    message: string,
+    public readonly status?: number,
+  ) {
+    super(message);
+  }
 }
 
 export type CredentialAuthBinding =
@@ -301,7 +458,12 @@ export type TargetResolutionErrorCode =
   | "MODEL_DISABLED"
   | "MODEL_AMBIGUOUS"
   | "DEFAULT_NOT_FOUND"
-  | "PROTOCOL_NOT_SUPPORTED";
+  | "PROTOCOL_NOT_SUPPORTED"
+  | "AUTH_SOURCE_NOT_FOUND"
+  | "AUTH_SOURCE_DISABLED"
+  | "AUTH_NOT_FOUND"
+  | "AUTH_DISABLED"
+  | "AUTH_MODEL_NOT_FOUND";
 
 export class TargetResolutionError extends Error {
   override name = "TargetResolutionError";
