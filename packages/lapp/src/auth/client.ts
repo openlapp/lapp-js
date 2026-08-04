@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createLappClient, type LappClient, type TestConnectionResult } from "../client/index.js";
 import type { ChatInput, LappResponse, LappStreamEventUnion } from "../client/adapter.js";
 import { listModelTargets, resolveModelTarget } from "../connection.js";
@@ -351,7 +352,7 @@ export function createRegistryClient(options: CreateRegistryClientOptions): Regi
       }
       pending.proposal = proposal;
       const challenge: AuthLoginChallenge = {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         verificationUri: proposal.verificationUri,
         ...(proposal.userCode ? { userCode: proposal.userCode } : {}),
         expiresAt: proposal.expiresAt,
