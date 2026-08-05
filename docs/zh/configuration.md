@@ -5,7 +5,7 @@ LAPP Profile 是一个标准 JSON 目录树，用来描述上游 Provider、本�
 
 ## Profile 位置
 
-SDK 和 CLI 按以下顺序解析根目录：
+SDK 和原生 `lappx` CLI 按以下顺序解析根目录：
 
 1. 显式路径参数或 `{ path }` 选项。
 2. `LAPP_HOME`。

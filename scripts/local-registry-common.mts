@@ -16,7 +16,6 @@ export const localNpmrc = path.join(userDataDirectory, "OpenLAPP", "local-regist
 export const legacyLocalNpmrc = path.join(root, "dev", "registry", ".npmrc.local");
 export const packageEntries = [
   { name: "@openlapp/lapp", directory: "lapp", tarballPrefix: "openlapp-lapp-" },
-  { name: "@openlapp/cli", directory: "cli", tarballPrefix: "openlapp-cli-" },
 ] as const;
 
 export interface PackageManifest {

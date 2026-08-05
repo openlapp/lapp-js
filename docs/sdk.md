@@ -300,7 +300,7 @@ network, transaction-helper, or generic IPC APIs to a renderer.
 
 `commitProfileTransaction()`, `computeProfileRevision()`, `readProfileStable()`, `readStable()`,
 `withWriterLock()`, `inspectWriterLock()`, and `repairWriterLock()` are public
-SDK primitives for official writer integrations such as the CLI. The lock is
+SDK primitives for official writer integrations such as the native `lappx` CLI. The lock is
 shared by every `LAPP_HOME` of the current OS user through `LAPP_STATE_HOME`;
 normal writers never steal it based on age, PID, or heartbeat. Repair is an
 explicit operator action using the exact observed owner token. See the

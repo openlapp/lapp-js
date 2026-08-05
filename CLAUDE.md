@@ -9,7 +9,7 @@ summary is [`docs/internal/CLAUDE.md`](docs/internal/CLAUDE.md).
 - `@openlapp/lapp` is the implementation. Profile parsing, validation, editing,
   model refresh, connection resolution, persistence, and direct requests belong
   in the SDK.
-- `@openlapp/cli` is a thin strict-argument and output layer over SDK use cases.
+- The user-facing `lappx` CLI lives in the companion Manager repository.
 - A Profile contains standard JSON only: optional `global.json`, and mandatory
   `provider.json` plus `models.json` for every Provider.
 - `models.json` is authoritative. Refresh is explicit and only adds unknown IDs
@@ -47,7 +47,7 @@ summary is [`docs/internal/CLAUDE.md`](docs/internal/CLAUDE.md).
 ## Repository map and checks
 
 - SDK: `packages/lapp/src/`
-- CLI router and commands: `packages/cli/src/index.ts`, `args.ts`, `commands/`
+- Native CLI reference: <https://github.com/openlapp/lapp-manager/blob/main/docs/cli.md>
 - User docs: `docs/`
 - Contributor detail: `docs/internal/CLAUDE.md`
 

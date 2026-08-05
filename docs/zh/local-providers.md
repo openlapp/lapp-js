@@ -11,23 +11,23 @@ Loopback 地址允许使用 HTTP。只有本地服务确实不需要凭据时，
 启动 Ollama，然后注册并刷新模型：
 
 ```bash
-lapp provider add --id ollama --yes
-lapp models refresh --provider ollama
-lapp models refresh --provider ollama --apply --yes
-lapp models list --provider ollama
+lappx provider add --id ollama --yes
+lappx models refresh --provider ollama
+lappx models refresh --provider ollama --apply --yes
+lappx models list --provider ollama
 ```
 
 显式选择返回的模型：
 
 ```bash
-lapp default set --task chat --provider ollama --model <返回的-id> --yes
-lapp chat "你好，Ollama" --default chat
+lappx default set --task chat --provider ollama --model <返回的-id> --yes
+lappx chat --text "你好，Ollama"
 ```
 
 等价的完整 Provider 命令为：
 
 ```bash
-lapp provider add \
+lappx provider add \
   --id ollama \
   --protocol openai-chat-completions \
   --base-url http://localhost:11434/v1 \
@@ -42,10 +42,10 @@ lapp provider add \
 启用本地 API 服务后运行：
 
 ```bash
-lapp provider add --id lm-studio --yes
-lapp models refresh --provider lm-studio --apply --yes
-lapp models list --provider lm-studio
-lapp default set --task chat --provider lm-studio --model <返回的-id> --yes
+lappx provider add --id lm-studio --yes
+lappx models refresh --provider lm-studio --apply --yes
+lappx models list --provider lm-studio
+lappx default set --task chat --provider lm-studio --model <返回的-id> --yes
 ```
 
 预设地址为 `http://localhost:1234/v1`。
@@ -55,10 +55,10 @@ lapp default set --task chat --provider lm-studio --model <返回的-id> --yes
 vLLM 在常用端口监听时运行：
 
 ```bash
-lapp provider add --id vllm --yes
-lapp models refresh --provider vllm --apply --yes
-lapp models list --provider vllm
-lapp default set --task chat --provider vllm --model <返回的-id> --yes
+lappx provider add --id vllm --yes
+lappx models refresh --provider vllm --apply --yes
+lappx models list --provider vllm
+lappx default set --task chat --provider vllm --model <返回的-id> --yes
 ```
 
 预设地址为 `http://localhost:8000/v1`。

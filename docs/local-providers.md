@@ -12,23 +12,23 @@ local server genuinely requires no credential.
 Start Ollama, then register and refresh it:
 
 ```bash
-lapp provider add --id ollama --yes
-lapp models refresh --provider ollama
-lapp models refresh --provider ollama --apply --yes
-lapp models list --provider ollama
+lappx provider add --id ollama --yes
+lappx models refresh --provider ollama
+lappx models refresh --provider ollama --apply --yes
+lappx models list --provider ollama
 ```
 
 Choose a returned model explicitly:
 
 ```bash
-lapp default set --task chat --provider ollama --model <returned-id> --yes
-lapp chat "Hello, Ollama" --default chat
+lappx default set --task chat --provider ollama --model <returned-id> --yes
+lappx chat --text "Hello, Ollama"
 ```
 
 The equivalent explicit provider command is:
 
 ```bash
-lapp provider add \
+lappx provider add \
   --id ollama \
   --protocol openai-chat-completions \
   --base-url http://localhost:11434/v1 \
@@ -43,10 +43,10 @@ lapp provider add \
 Enable its local API server, then run:
 
 ```bash
-lapp provider add --id lm-studio --yes
-lapp models refresh --provider lm-studio --apply --yes
-lapp models list --provider lm-studio
-lapp default set --task chat --provider lm-studio --model <returned-id> --yes
+lappx provider add --id lm-studio --yes
+lappx models refresh --provider lm-studio --apply --yes
+lappx models list --provider lm-studio
+lappx default set --task chat --provider lm-studio --model <returned-id> --yes
 ```
 
 The preset uses `http://localhost:1234/v1`.
@@ -56,10 +56,10 @@ The preset uses `http://localhost:1234/v1`.
 With vLLM listening on its usual port:
 
 ```bash
-lapp provider add --id vllm --yes
-lapp models refresh --provider vllm --apply --yes
-lapp models list --provider vllm
-lapp default set --task chat --provider vllm --model <returned-id> --yes
+lappx provider add --id vllm --yes
+lappx models refresh --provider vllm --apply --yes
+lappx models list --provider vllm
+lappx default set --task chat --provider vllm --model <returned-id> --yes
 ```
 
 The preset uses `http://localhost:8000/v1`.

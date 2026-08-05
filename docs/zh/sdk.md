@@ -271,7 +271,7 @@ Bridge 不提供凭据 get、resolve、export 或 rebind 操作。绑定不匹�
 Provider 配置，再重新录入凭据。不要向 renderer 暴露底层 `CredentialVault`、文件
 系统、网络、事务 helper 或通用 IPC API。
 
-SDK 为 CLI 等官方 writer 集成公开
+SDK 为原生 `lappx` CLI 等官方 writer 集成公开
 `commitProfileTransaction()`、`computeProfileRevision()`、`readProfileStable()`、`readStable()`、
 `withWriterLock()`、`inspectWriterLock()` 与 `repairWriterLock()`。所有
 `LAPP_HOME` 通过 `LAPP_STATE_HOME` 共享当前 OS 用户写锁；正常 writer 不会按

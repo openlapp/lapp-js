@@ -164,12 +164,11 @@ jobs:
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           ROOT_VERSION="$(node -p "require('./package.json').version")"
           SDK_VERSION="$(node -p "require('./packages/lapp/package.json').version")"
-          CLI_VERSION="$(node -p "require('./packages/cli/package.json').version")"
           if [[ "$TAG_VERSION" == 0.* ]]; then
             echo "0.x versions are internal-only and must use the loopback Registry without a Git tag"
             exit 1
           fi
-          for manifest in packages/lapp/package.json packages/cli/package.json; do
+          for manifest in packages/lapp/package.json; do
             PUBLISH_REGISTRY="$(node -p "require('./${manifest}').publishConfig?.registry || ''")"
             if [[ "$PUBLISH_REGISTRY" != "https://registry.npmjs.org/" ]]; then
               echo "$manifest must target https://registry.npmjs.org/ before a public release (found: ${PUBLISH_REGISTRY:-unset})"
@@ -177,9 +176,8 @@ jobs:
             fi
           done
           if [[ "$ROOT_VERSION" != "$TAG_VERSION" \
-            || "$SDK_VERSION" != "$TAG_VERSION" \
-            || "$CLI_VERSION" != "$TAG_VERSION" ]]; then
-            echo "version mismatch: tag=$TAG_VERSION root=$ROOT_VERSION sdk=$SDK_VERSION cli=$CLI_VERSION"
+            || "$SDK_VERSION" != "$TAG_VERSION" ]]; then
+            echo "version mismatch: tag=$TAG_VERSION root=$ROOT_VERSION sdk=$SDK_VERSION"
             exit 1
           fi
           if [[ "$SDK_VERSION" == *-* ]]; then
@@ -201,12 +199,6 @@ jobs:
       - name: Publish @openlapp/lapp
         working-directory: lapp-js
         run: node scripts/publish-if-missing.mjs "@openlapp/lapp" "${{ steps.version.outputs.version }}" "${{ steps.version.outputs.dist_tag }}"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @openlapp/cli
-        working-directory: lapp-js
-        run: node scripts/publish-if-missing.mjs "@openlapp/cli" "${{ steps.version.outputs.version }}" "${{ steps.version.outputs.dist_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

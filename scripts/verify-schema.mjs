@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalRoot = path.resolve(root, "..", "lapp");
 const sdkRoot = path.join(root, "packages", "lapp");
-const cliRoot = path.join(root, "packages", "cli");
 const schemaRoot = path.join(sdkRoot, "schema");
 const conformanceRoot = path.join(sdkRoot, "conformance");
 const lock = JSON.parse(fs.readFileSync(path.join(root, "spec-lock.json"), "utf8"));
@@ -111,8 +110,6 @@ const documentFiles = Object.keys(lock.documents ?? {}).sort();
 for (const file of documentFiles) {
   const sdk = fs.readFileSync(path.join(sdkRoot, file));
   if (hash(sdk) !== lock.documents[file]) fail(`document lock drift: ${file}`);
-  const cli = fs.readFileSync(path.join(cliRoot, file));
-  if (!sdk.equals(cli)) fail(`package document drift: ${file}`);
 }
 
 const conformanceFiles = filesUnder(conformanceRoot);

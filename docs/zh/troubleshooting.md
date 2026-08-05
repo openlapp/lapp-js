@@ -3,8 +3,8 @@
 先执行验证和脱敏检查：
 
 ```bash
-lapp validate
-lapp inspect
+lappx validate
+lappx inspect
 ```
 
 需要让其他程序消费结果时使用 `--json`。
@@ -13,7 +13,7 @@ lapp inspect
 
 | 错误 | 含义 | 修复 |
 |------|------|------|
-| `ProfileValidationError` | JSON 目录树未通过结构或语义验证。 | 运行 `lapp inspect`，逐项修复 ERROR 诊断。 |
+| `ProfileValidationError` | JSON 目录树未通过结构或语义验证。 | 运行 `lappx inspect`，逐项修复 ERROR 诊断。 |
 | `TargetResolutionError` | 无法解析 Provider、模型、alias、默认值、启用状态或协议交集。 | 查看错误 `code`；核对 canonical ID、启用状态、默认值和应用支持的协议。 |
 | `MissingEnvSecretError` / `ENV_SECRET_MISSING` | 缺少 `env://NAME` 对应的值。 | 导出变量，或传入显式 SDK 环境变量 map。 |
 | `CredentialError` | 密钥引用、Vault 后端、记录、权限或绑定失败。 | 查看稳定 `code`；先用 `credential status` 检查，再恢复或显式替换凭据。 |
@@ -42,7 +42,7 @@ working-tree snapshot 比对。working-tree snapshot 只用于开发，不能作
 - Provider 目录名必须等于 Provider ID。
 - 核心对象拒绝未知字段；实现数据应移入 `extensions`。
 - 即使 `loadProfile()` 无法返回有效 Profile，也可以运行
-  `lapp inspect --json` 查看部分、已脱敏的诊断。
+  `lappx inspect --json` 查看部分、已脱敏的诊断。
 
 ## 模型刷新失败
 
@@ -64,7 +64,7 @@ working-tree snapshot 比对。working-tree snapshot 只用于开发，不能作
 ## 已有模型元数据没有更新
 
 刷新会保留本地字段。它只追加未知 ID，并可补充当前缺失的显示名称。如需有意修改
-本地字段，请编辑 `models.json` 或使用 `lapp model set`。
+本地字段，请编辑 `models.json` 或使用 `lappx model set`。
 
 ## 模型 alias 解析结果异常
 
@@ -78,7 +78,7 @@ canonical 模型 ID；默认值指向异常时请检查 `global.json`。
 - 只接受 plaintext、`env://NAME` 与 `vault://provider/credential`。
   `keychain://`、`file://` 和未知 scheme 都不合法。
 - 静态 `requestHeaders` 不能携带认证或 Cookie。
-- `lapp resolve --default chat --json` 只显示 scheme 与凭据状态，永不显示密钥；
+- `lappx resolve --default chat --json` 只显示 scheme 与凭据状态，永不显示密钥；
   CLI 不提供 reveal 或 export。
 - `VAULT_BINDING_MISMATCH` 表示 Provider ID、标准化 origin、auth type 或 auth name
   已改变。使用 `credential set --overwrite` 重新输入；LAPP 不自动 rebind。
@@ -88,7 +88,7 @@ canonical 模型 ID；默认值指向异常时请检查 `global.json`。
 ## 报告问题
 
 在 [lapp-js 仓库](https://github.com/openlapp/lapp-js)提交 issue，并附上命令、
-退出码、脱敏后的 `lapp inspect --json` 输出，以及不含 plaintext 凭据的最小
+退出码、脱敏后的 `lappx inspect --json` 输出，以及不含 plaintext 凭据的最小
 Profile。
 
 ## 另见

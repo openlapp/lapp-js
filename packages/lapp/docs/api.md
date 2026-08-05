@@ -286,7 +286,7 @@ long-lived host that accepts stale client snapshots must add a Vault-side CAS
 generation. `createNodeLappManagerHost()` supplies that coordination for the
 official manager bridge.
 
-These helpers support official writers such as the CLI. They must not be
+These helpers support official writers such as the native `lappx` CLI. They must not be
 bridged into an untrusted renderer. The current standalone Manager Alpha and
 its trust-boundary contracts live in
 [`openlapp/lapp-manager`](https://github.com/openlapp/lapp-manager); the

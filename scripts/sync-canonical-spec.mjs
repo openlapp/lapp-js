@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalRoot = path.resolve(root, "..", "lapp");
 const sdkRoot = path.join(root, "packages", "lapp");
-const cliRoot = path.join(root, "packages", "cli");
 const conformanceRoot = path.join(sdkRoot, "conformance");
 const documents = [
   "USER_AGREEMENT.en.md",
@@ -90,7 +89,6 @@ for (const file of schemaFiles) copyCanonicalFile(
 for (const file of documents) {
   const source = path.join(canonicalRoot, file);
   copyCanonicalFile(source, path.join(sdkRoot, file));
-  copyCanonicalFile(source, path.join(cliRoot, file));
 }
 
 assertExactChild(sdkRoot, conformanceRoot);

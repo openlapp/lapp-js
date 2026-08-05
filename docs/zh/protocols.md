@@ -85,5 +85,5 @@ SDK 会严格验证每一页。非法 JSON、非法条目、重复 ID、不前�
 - 永不删除已有 ID；
 - 将合法空列表视为无变化。
 
-CLI 的 `lapp models refresh` 采用相同行为；只有同时使用 `--apply` 和 `--yes`
+原生 CLI 的 `lappx models refresh` 采用相同行为；只有同时使用 `--apply` 和 `--yes`
 才会写盘。

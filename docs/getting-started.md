@@ -5,38 +5,38 @@ application still sends requests directly to the selected upstream API.
 
 The official SDK is recommended for application integrations so applications
 do not have to reproduce credential and concurrency rules. Direct protocol
-implementations and the CLI remain open, conforming paths:
+implementations and the native `lappx` CLI remain open, conforming paths:
 
 1. Use `@openlapp/lapp` from TypeScript.
 2. Read the JSON profile and implement the LAPP rules yourself.
-3. Invoke `lapp` and consume its stable JSON output.
+3. Invoke [`lappx`](https://github.com/openlapp/lapp-manager/blob/main/docs/cli.md)
+   and consume its stable JSON output.
 
 ## Install
 
 ```bash
 npm install @openlapp/lapp
-npm install -g @openlapp/cli
 ```
 
 Node.js 18.18 or newer is required.
 
 ## Create a profile
 
-The CLI is the quickest way to create the standard Provider file pair.
+The native `lappx` CLI is the quickest way to create the standard Provider file pair.
 `global.json` is created when you set a default. Presets fill in known
 endpoints, protocols, auth shape, and model-discovery URL.
 
 ```bash
 export OPENAI_API_KEY=sk-...
-lapp provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
-lapp validate
-lapp models list
+lappx provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
+lappx validate
+lappx models list
 ```
 
 For a custom upstream, provide the fields explicitly:
 
 ```bash
-lapp provider add \
+lappx provider add \
   --id custom \
   --base-url https://ai.example.com/v1 \
   --protocol openai-chat-completions \
@@ -58,15 +58,15 @@ requires no credential. Write commands preview their file plan and require
 `models.json` remains authoritative. Refresh is explicit and non-destructive:
 
 ```bash
-lapp models refresh --provider openai                 # preview additions
-lapp models refresh --provider openai --apply --yes   # write additions
+lappx models refresh --provider openai                 # preview additions
+lappx models refresh --provider openai --apply --yes   # write additions
 ```
 
 Refresh preserves every existing model and local field. Set a default
 separately:
 
 ```bash
-lapp default set --task chat --provider openai --model gpt-4o-mini --yes
+lappx default set --task chat --provider openai --model gpt-4o-mini --yes
 ```
 
 ## Option 1: read the profile directly
@@ -127,17 +127,18 @@ const response = await client.chat({
 console.log(response.text);
 ```
 
-## Option 3: consume CLI JSON
+## Option 3: consume `lappx` JSON
 
 ```bash
-lapp models list --json
-lapp resolve --default chat --protocol openai-responses --json
+lappx models list --json
+lappx resolve --default chat --protocol openai-responses --json
 ```
 
-Machine output is one document shaped as `{"version":1,"data":...}`. The CLI
+Machine output is one document shaped as `{ "ok": true, "result": ... }`. The CLI
 never emits a resolved credential; `resolve` reports its scheme and status, and
 `credential status` checks a known Vault reference without revealing it. See
-the [CLI reference](cli.md) for exit codes and the exact command surface.
+the [`lappx` CLI reference](https://github.com/openlapp/lapp-manager/blob/main/docs/cli.md)
+for exit codes and the exact command surface.
 
 ## Next steps
 

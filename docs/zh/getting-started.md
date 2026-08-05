@@ -4,37 +4,36 @@ LAPP 让 AI 应用共享一个本地 Provider 与模型 Registry。应用仍然�
 上游 API 发送请求。
 
 官方推荐应用通过 SDK 接入，从而无需自行复刻凭据与并发规则；直接实现协议和
-CLI 仍然是开放、合规的路径：
+配套的 `lappx` CLI 仍然是开放、合规的路径：
 
 1. 在 TypeScript 中使用 `@openlapp/lapp`。
 2. 直接读取 JSON Profile，自行实现 LAPP 规则。
-3. 调用 `lapp`，消费稳定的 JSON 输出。
+3. 调用配套仓库中的 [`lappx`](https://github.com/openlapp/lapp-manager/blob/main/docs/cli.md)，消费稳定的 JSON 输出。
 
 ## 安装
 
 ```bash
 npm install @openlapp/lapp
-npm install -g @openlapp/cli
 ```
 
 需要 Node.js 18.18 或更高版本。
 
 ## 创建 Profile
 
-CLI 是创建标准 Provider 两文件结构的最快方式；设置默认值时才会创建
+`lappx` CLI 是创建标准 Provider 两文件结构的最快方式；设置默认值时才会创建
 `global.json`。预设会补充已知地址、协议、认证结构和模型发现 URL。
 
 ```bash
 export OPENAI_API_KEY=sk-...
-lapp provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
-lapp validate
-lapp models list
+lappx provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
+lappx validate
+lappx models list
 ```
 
 自定义上游需要显式提供字段：
 
 ```bash
-lapp provider add \
+lappx provider add \
   --id custom \
   --base-url https://ai.example.com/v1 \
   --protocol openai-chat-completions \
@@ -56,14 +55,14 @@ lapp provider add \
 `models.json` 始终是权威目录。刷新是显式且非破坏性的操作：
 
 ```bash
-lapp models refresh --provider openai                 # 预览新增项
-lapp models refresh --provider openai --apply --yes   # 写入新增项
+lappx models refresh --provider openai                 # 预览新增项
+lappx models refresh --provider openai --apply --yes   # 写入新增项
 ```
 
 刷新保留所有已有模型和本地字段。默认值需要单独设置：
 
 ```bash
-lapp default set --task chat --provider openai --model gpt-4o-mini --yes
+lappx default set --task chat --provider openai --model gpt-4o-mini --yes
 ```
 
 ## 方式一：直接读取 Profile
@@ -120,16 +119,16 @@ const response = await client.chat({
 console.log(response.text);
 ```
 
-## 方式三：消费 CLI JSON
+## 方式三：消费 `lappx` JSON
 
 ```bash
-lapp models list --json
-lapp resolve --default chat --protocol openai-responses --json
+lappx models list --json
+lappx resolve --default chat --protocol openai-responses --json
 ```
 
-机器输出始终是一个 `{"version":1,"data":...}` 文档。CLI 永远不会输出解析后的
+机器输出始终是一个 `{ "ok": true, "result": ... }` 文档。CLI 永远不会输出解析后的
 凭据；`resolve` 只报告 scheme 与状态，`credential status` 检查已知 Vault 引用
-时也不会泄露内容。完整命令面和退出码见 [CLI 参考](cli.md)。
+时也不会泄露内容。完整命令面和退出码见 [`lappx` CLI 参考](https://github.com/openlapp/lapp-manager/blob/main/docs/cli.md)。
 
 ## 下一步
 

@@ -8,7 +8,6 @@ Contributor guidance for `lapp-js`.
 
 - `@openlapp/lapp` loads, validates, queries, resolves, refreshes, edits, and
   writes local profiles; its optional client calls upstream providers directly.
-- `@openlapp/cli` is a thin SDK wrapper with stable JSON output.
 - Applications may also implement the three-file LAPP contract directly.
 
 v1 is limited to the local Registry, explicit Profile management, connection
@@ -55,8 +54,8 @@ Run from the repository root with Node `>=18.18.0` and pnpm 10:
 - `pnpm verify:spec`
 - `pnpm smoke:pack`
 
-The SDK builds ESM, CJS, source maps, and declarations. The CLI builds an ESM
-`lapp` executable. `pnpm clean` removes `dist` but preserves the versioned
+The SDK builds ESM, CJS, source maps, and declarations. `pnpm clean` removes
+`dist` but preserves the versioned
 Schema snapshot.
 
 CI runs build, lint, tests, docs, and spec checks on Node 18/20/22, plus Ubuntu
@@ -75,8 +74,7 @@ binding.
 
 ## SDK architecture
 
-All profile and connection behavior belongs in `packages/lapp/src/`; the CLI
-must not duplicate it.
+All profile and connection behavior belongs in `packages/lapp/src/`.
 
 - `config/`: resolve explicit path, `LAPP_HOME`, or `~/.lapp`; parse standard
   JSON; `loadProfile` returns only validated domain data; `inspectProfile`
@@ -100,18 +98,6 @@ must not duplicate it.
 
 Package-root exports are explicit in `packages/lapp/src/index.ts`. Parsing
 helpers, Ajv test hooks, adapter internals, and discovery internals stay private.
-
-## CLI architecture
-
-`packages/cli/src/index.ts` is bootstrap/router only. `args.ts` uses strict
-`node:util.parseArgs`; `commands/profile.ts` owns profile commands,
-`commands/runtime.ts` owns resolve/ping/chat, and `output.ts` owns JSON envelopes,
-errors, exit semantics, and redaction.
-
-Machine output is one `{"version":1,"data":...}` document; errors use the same
-versioned envelope on stderr. No CLI command emits a credential. Raw values are
-accepted only through a no-echo TTY prompt or stdin, never an argv value. Never
-add prompts, diagnostics, or debug text to JSON stdout.
 
 ## Invariants
 
@@ -140,5 +126,5 @@ add prompts, diagnostics, or debug text to JSON stdout.
 
 Use isolated temporary Profile roots and stubbed or local `fetch` implementations.
 Security and non-trivial parsing changes need one focused regression test. The
-pack smoke must install produced tarballs outside the workspace and invoke the
-real package entry points and `lapp` binary.
+pack smoke must install produced SDK tarballs outside the workspace and invoke
+the real package entry points.

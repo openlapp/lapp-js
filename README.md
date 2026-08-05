@@ -1,6 +1,6 @@
 # lapp-js
 
-The official TypeScript SDK and CLI for **LAPP** (Local AI Provider Profiles).
+The official TypeScript SDK for **LAPP** (Local AI Provider Profiles).
 LAPP is an open local provider-profile protocol: applications discover models
 and connection details, then communicate with the upstream provider directly.
 
@@ -9,19 +9,18 @@ and connection details, then communicate with the upstream provider directly.
 ```text
 Recommended: app -> @openlapp/lapp -> upstream API
 Direct:      app -> read ~/.lapp -> upstream API
-CLI:         app -> lapp JSON output -> upstream API
 ```
 
 Applications always communicate with upstream providers directly; there is no
 daemon, gateway, proxy, or request-routing service. Official integrations
 should prefer an SDK so applications do not need to handle credential storage
-details, while direct protocol implementations and the CLI remain conforming
-open integration paths.
+details, while direct protocol implementations remain conforming open
+integration paths. The user-facing `lappx` CLI is maintained in the companion
+Manager repository.
 
 | Package | Purpose |
 |---------|---------|
 | [`@openlapp/lapp`](docs/sdk.md) | Load and manage profiles, list and refresh models, resolve credentials, and optionally call supported chat APIs. |
-| [`@openlapp/cli`](docs/cli.md) | Thin command-line wrapper with stable JSON output. |
 
 ## Install
 
@@ -31,7 +30,6 @@ open integration paths.
 
 ```bash
 npm install @openlapp/lapp
-npm install -g @openlapp/cli
 ```
 
 Node.js 18.18 or newer is required.
@@ -55,27 +53,11 @@ never removes models or overwrites existing local fields.
 
 See [Configuration](docs/configuration.md) for the complete contract.
 
-## CLI quick start
+## CLI
 
-```bash
-export OPENAI_API_KEY=sk-...
-lapp provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
-lapp default set --task chat --provider openai --model gpt-4o-mini --yes
-lapp models list --json
-lapp resolve --default chat --json
-lapp chat "Hello" --default chat
-```
-
-Refresh a configured remote model directory explicitly:
-
-```bash
-lapp models refresh --provider openai                 # preview
-lapp models refresh --provider openai --apply --yes   # append new models
-```
-
-Resolved credentials are never printed. For a newly entered raw key, the
-interactive CLI uses the current user's Vault by default; `--env NAME` keeps an
-externally managed environment reference instead.
+The legacy `@openlapp/cli` package and its `lapp` executable are removed. Use
+the native [`lappx` CLI](https://github.com/openlapp/lapp-manager/blob/main/docs/cli.md)
+for profile management, diagnostics, connection tests, and Work/Chat sessions.
 
 ## SDK quick start
 
@@ -145,7 +127,6 @@ The bundled chat client returns `TargetResolutionError` with code
 ## Documentation
 
 - **[Getting started](docs/getting-started.md)** — the three consumption paths
-- **[CLI reference](docs/cli.md)** — commands, JSON output, and exit codes
 - **[SDK guide](docs/sdk.md)** — discovery, resolution, refresh, and direct calls
 - **[Manager](https://github.com/openlapp/lapp-manager)** — standalone Tauri/Vue/Naive UI Alpha source and contracts
 - **[Local beta Registry](dev/registry/README.md)** — private Verdaccio publishing and clean installs
@@ -155,7 +136,7 @@ The bundled chat client returns `TargetResolutionError` with code
 - [Local providers](docs/local-providers.md) — Ollama, LM Studio, and vLLM
 - [Troubleshooting](docs/troubleshooting.md) — errors and common fixes
 - [User agreement and risk disclosure](packages/lapp/USER_AGREEMENT.en.md) —
-  distribution template included in both packages
+  distribution template included in the SDK package
 - [API reference](packages/lapp/docs/api.md) · [CHANGELOG](CHANGELOG.md)
 
 ## v1 boundaries

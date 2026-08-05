@@ -129,7 +129,7 @@ global writer lock at `<LAPP_STATE_HOME>/locks/writer-v1.lock`. The lock is
 shared across all `LAPP_HOME` roots because Vault records are also shared.
 Normal writers wait up to 5000 ms and return `PROFILE_LOCKED`; they never steal
 a lock based on age, owner PID, or heartbeat. Repair is a separate dangerous
-operator action that must recheck the exact token returned by `lapp lock
+operator action that must recheck the exact token returned by `lappx lock
 inspect`. Missing or malformed owner records return `PROFILE_LOCK_INVALID` and
 cannot be repaired through the token-checked protocol operation. Stable readers
 accept a snapshot only when no writer intervenes and
@@ -172,4 +172,4 @@ rejects colliding or invalid IDs instead of sanitizing them.
 - Select plaintext storage only through an explicit, reviewed opt-in.
 - Use `auth.type: "none"` only for services that truly require no credential.
 - Keep `modelDiscovery` on the provider's origin.
-- Run `lapp validate` after manual edits.
+- Run `lappx validate` after manual edits.

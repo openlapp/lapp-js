@@ -1,7 +1,7 @@
 # lapp-js
 
 **LAPP**（Local AI Provider Profiles，本地 AI Provider Profile）的官方
-TypeScript SDK 与 CLI。LAPP 是开放的本地 Provider Profile 协议：应用发现模型
+TypeScript SDK。LAPP 是开放的本地 Provider Profile 协议：应用发现模型
 和连接信息后，直接与上游 Provider 通信。
 
 > **语言：** [English](README.md) | [中文](README_zh.md)
@@ -9,17 +9,16 @@ TypeScript SDK 与 CLI。LAPP 是开放的本地 Provider Profile 协议：应�
 ```text
 推荐：应用 -> @openlapp/lapp -> 上游 API
 直连：应用 -> 读取 ~/.lapp -> 上游 API
-CLI： 应用 -> lapp JSON 输出 -> 上游 API
 ```
 
 应用始终直接与上游 Provider 通信；不存在 daemon、gateway、proxy 或请求路由
 服务。官方集成建议使用 SDK，使应用无需自行处理凭据存储细节；直接实现协议和
-调用 CLI 仍然是符合规范的开放接入路径。
+直接实现协议仍然是符合规范的开放接入路径。面向用户的 `lappx` CLI
+由配套的 Manager 仓库维护。
 
 | 包 | 用途 |
 |----|------|
 | [`@openlapp/lapp`](docs/zh/sdk.md) | 加载和管理 Profile、列出和刷新模型、解析凭据，也可直接调用支持的聊天 API。 |
-| [`@openlapp/cli`](docs/zh/cli.md) | 提供稳定 JSON 输出的轻量命令行包装。 |
 
 ## 安装
 
@@ -28,7 +27,6 @@ CLI： 应用 -> lapp JSON 输出 -> 上游 API
 
 ```bash
 npm install @openlapp/lapp
-npm install -g @openlapp/cli
 ```
 
 需要 Node.js 18.18 或更高版本。
@@ -51,26 +49,11 @@ LAPP v1 只使用标准 JSON 和三种文件：
 
 完整合同见[配置文档](docs/zh/configuration.md)。
 
-## CLI 快速开始
+## CLI
 
-```bash
-export OPENAI_API_KEY=sk-...
-lapp provider add --id openai --model gpt-4o-mini --env OPENAI_API_KEY --yes
-lapp default set --task chat --provider openai --model gpt-4o-mini --yes
-lapp models list --json
-lapp resolve --default chat --json
-lapp chat "你好" --default chat
-```
-
-显式刷新已经配置的远端模型目录：
-
-```bash
-lapp models refresh --provider openai                 # 预览
-lapp models refresh --provider openai --apply --yes   # 追加新模型
-```
-
-CLI 永远不会打印解析后的凭据。交互式输入新的原始 key 时，默认保存到当前用户的
-Vault；使用 `--env NAME` 则保留外部管理的环境变量引用。
+旧的 `@openlapp/cli` 包及其 `lapp` 可执行文件已移除。Provider 管理、诊断、
+连接测试以及 Work/Chat 会话请使用配套 Manager 仓库中的
+[`lappx` CLI](https://github.com/openlapp/lapp-manager/blob/main/docs/cli.md)。
 
 ## SDK 快速开始
 
@@ -133,7 +116,6 @@ Profile 可以保存由应用自行实现的其他协议 ID。SDK 内置聊天�
 ## 文档
 
 - **[入门指南](docs/zh/getting-started.md)**——三种接入方式
-- **[CLI 参考](docs/zh/cli.md)**——命令、JSON 输出和退出码
 - **[SDK 指南](docs/zh/sdk.md)**——发现、解析、刷新与直连调用
 - **[Manager](https://github.com/openlapp/lapp-manager)**——独立的 Tauri/Vue/Naive UI Alpha 源码与合同
 - **[本机 beta Registry](dev/registry/README.md)**——私有 Verdaccio 发布与全新安装验证
@@ -142,8 +124,8 @@ Profile 可以保存由应用自行实现的其他协议 ID。SDK 内置聊天�
 - [协议说明](docs/zh/protocols.md)——协议选择和模型发现
 - [本地 Provider](docs/zh/local-providers.md)——Ollama、LM Studio 与 vLLM
 - [故障排除](docs/zh/troubleshooting.md)——错误与常见修复
-- [用户协议与风险披露](packages/lapp/USER_AGREEMENT.zh-CN.md)——两个包均随包分发的
-  安装协议模板
+- [用户协议与风险披露](packages/lapp/USER_AGREEMENT.zh-CN.md)——SDK 随包分发的安装
+  协议模板
 - [API 参考](packages/lapp/docs/api.md) · [CHANGELOG](CHANGELOG.md)
 
 ## v1 边界

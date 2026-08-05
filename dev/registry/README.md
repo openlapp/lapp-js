@@ -23,7 +23,7 @@ pnpm registry:smoke
 stores only its token in the current user's local application-data directory.
 On Windows the token file receives a current-user-only ACL; the token is never
 printed. Publishing performs the normal build and tarball smoke test before
-uploading the SDK and CLI in dependency order under the `beta` dist-tag.
+uploading the SDK under the `beta` dist-tag.
 
 The Registry endpoint is <http://127.0.0.1:4873>. Package metadata and
 tarballs require authentication; the smoke command verifies both authenticated
@@ -52,7 +52,7 @@ point that process at the protected npm configuration created by
 
 ```powershell
 $env:NPM_CONFIG_USERCONFIG = Join-Path $env:LOCALAPPDATA "OpenLAPP\local-registry\npmrc"
-pnpm add @openlapp/lapp@0.1.2 @openlapp/cli@0.1.2
+pnpm add @openlapp/lapp@0.1.2
 ```
 
 That file contains the following registry split plus the local token; do not

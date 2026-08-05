@@ -2,7 +2,7 @@
   "name": "lapp-js",
   "version": "0.1.2",
   "private": true,
-  "description": "TypeScript SDK and CLI workspace for LAPP (Local AI Provider Profiles).",
+  "description": "TypeScript SDK workspace for LAPP (Local AI Provider Profiles).",
   "license": "MIT",
   "packageManager": "pnpm@10.29.2",
   "engines": {
@@ -25,7 +25,7 @@
     "registry:smoke": "tsx scripts/smoke-local-registry.mts",
     "verify:spec": "node --test scripts/resolve-canonical-ref.test.mjs && node scripts/verify-schema.mjs",
     "clean": "pnpm -r run clean",
-    "verify:docs": "tsx scripts/verify-cli-docs.mts && tsx scripts/verify-protocols.mts"
+    "verify:docs": "tsx scripts/verify-protocols.mts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

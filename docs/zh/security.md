@@ -108,7 +108,7 @@ key。
 `<LAPP_STATE_HOME>/locks/writer-v1.lock`。Vault 记录跨 `LAPP_HOME` 共享，因此
 写锁也必须跨 root 共享。正常 writer 最多等待 5000 ms 后返回 `PROFILE_LOCKED`；
 永远不会按年龄、owner PID 或 heartbeat 偷锁。修复是独立且危险的 operator 操作，
-必须重新核对 `lapp lock inspect` 返回的精确 token。owner 记录缺失或畸形时返回
+必须重新核对 `lappx lock inspect` 返回的精确 token。owner 记录缺失或畸形时返回
 `PROFILE_LOCK_INVALID`，不能通过 token-checked 协议操作修复。稳定读取只有在期间
 没有 writer 介入且前后确定性 revision 相同时才接受 snapshot。
 
@@ -140,4 +140,4 @@ Provider ID 使用严格、文件名安全的 grammar。Writer 在每次写入�
 - 只有经过明确审查和显式 opt-in 才选择 plaintext storage。
 - 只有服务确实无需凭据时才使用 `auth.type: "none"`。
 - `modelDiscovery` 保持与 Provider 同源。
-- 手工修改后运行 `lapp validate`。
+- 手工修改后运行 `lappx validate`。

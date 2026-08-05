@@ -5,7 +5,7 @@ providers, a local authoritative model directory, and optional task defaults.
 
 ## Profile location
 
-The SDK and CLI resolve the root in this order:
+The SDK and native `lappx` CLI resolve the root in this order:
 
 1. Explicit path argument or `{ path }` option.
 2. `LAPP_HOME`.

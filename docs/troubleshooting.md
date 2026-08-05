@@ -3,8 +3,8 @@
 Start with validation and redacted inspection:
 
 ```bash
-lapp validate
-lapp inspect
+lappx validate
+lappx inspect
 ```
 
 Use `--json` when another program needs to consume the result.
@@ -13,7 +13,7 @@ Use `--json` when another program needs to consume the result.
 
 | Error | Meaning | Fix |
 |-------|---------|-----|
-| `ProfileValidationError` | The JSON tree failed structural or semantic validation. | Run `lapp inspect`, then fix each ERROR diagnostic. |
+| `ProfileValidationError` | The JSON tree failed structural or semantic validation. | Run `lappx inspect`, then fix each ERROR diagnostic. |
 | `TargetResolutionError` | A provider, model, alias, default, enabled state, or protocol intersection could not be resolved. | Inspect the error `code`; verify canonical IDs, enabled flags, defaults, and supported protocols. |
 | `MissingEnvSecretError` / `ENV_SECRET_MISSING` | An `env://NAME` value is absent. | Export it or pass an explicit SDK environment map. |
 | `CredentialError` | A secret reference, Vault backend, record, permission, or binding failed. | Inspect its stable `code`; use `credential status`, then restore or explicitly replace the credential. |
@@ -43,7 +43,7 @@ development provenance only and cannot authorize a release.
 - Every present file must use `"schemaVersion": "1.0"`.
 - The provider directory name must equal its provider ID.
 - Core objects reject unknown fields; move implementation data to `extensions`.
-- Run `lapp inspect --json` to see partial, redacted diagnostics even when
+- Run `lappx inspect --json` to see partial, redacted diagnostics even when
   `loadProfile()` cannot return a valid profile.
 
 ## Model refresh fails
@@ -69,7 +69,7 @@ needed.
 ## Existing model metadata did not update
 
 Refresh preserves local fields. It only appends unknown IDs and may fill a
-currently missing display name. Edit `models.json` or use `lapp model set` for
+currently missing display name. Edit `models.json` or use `lappx model set` for
 deliberate local changes.
 
 ## A model alias resolves unexpectedly
@@ -85,7 +85,7 @@ default points somewhere unexpected.
 - Only plaintext, `env://NAME`, and `vault://provider/credential` secrets are
   accepted. `keychain://`, `file://`, and unknown schemes are invalid.
 - Static `requestHeaders` cannot carry authentication or cookies.
-- `lapp resolve --default chat --json` shows scheme and credential status but
+- `lappx resolve --default chat --json` shows scheme and credential status but
   never the secret. The CLI has no reveal or export command.
 - `VAULT_BINDING_MISMATCH` means the provider ID, normalized origin, auth type,
   or auth name changed. Re-enter the credential with `credential set
@@ -96,7 +96,7 @@ default points somewhere unexpected.
 ## Reporting a bug
 
 Open an issue in the [lapp-js repository](https://github.com/openlapp/lapp-js)
-with the command, exit code, redacted `lapp inspect --json` output, and a minimal
+with the command, exit code, redacted `lappx inspect --json` output, and a minimal
 profile that contains no plaintext credential.
 
 ## See also

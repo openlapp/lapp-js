@@ -4,14 +4,10 @@
  * This is a defense-in-depth layer alongside the SDK's scheme-aware
  * `redactSecret`: the text we receive from providers can contain credential
  * shapes the SDK never resolves, so we scrub common patterns from every
- * string leaf before it reaches Error.message, `err.raw`, or the CLI's
- * stdout/stderr.
+ * string leaf before it reaches Error.message or `err.raw`.
  *
  * A single canonical copy lives here so adding a new secret pattern (e.g. an
- * AWS key or Slack token) covers the client, the sync layer, and the CLI in
- * one edit. The CLI keeps its own copy in `cli/src/output.ts` for the case
- * where the SDK is not importable (e.g. before `pnpm build`); that copy is
- * intentionally mirrored and updated in lockstep.
+ * AWS key or Slack token) covers the client and sync layer in one edit.
  */
 
 export const SECRET_PATTERNS: RegExp[] = [

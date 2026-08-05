@@ -1,7 +1,9 @@
 # Changelog
 
-All notable changes to `@openlapp/lapp` and `@openlapp/cli` are documented
-in this file.
+All notable changes to `@openlapp/lapp` are documented in this file.
+
+The legacy `@openlapp/cli` package was removed in favor of the native `lappx`
+CLI maintained by the companion Manager repository.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 

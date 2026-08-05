@@ -93,5 +93,5 @@ HTTPS; loopback may use HTTP. Credential-bearing requests use
 - never removes existing IDs;
 - treats a valid empty list as no change.
 
-The CLI mirrors this behavior with `lapp models refresh`; applying requires both
+The native CLI mirrors this behavior with `lappx models refresh`; applying requires both
 `--apply` and `--yes`.

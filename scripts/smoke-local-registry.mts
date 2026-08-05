@@ -95,7 +95,6 @@ try {
     type: "module",
     dependencies: {
       "@openlapp/lapp": version,
-      "@openlapp/cli": version,
     },
   }, null, 2)}\n`, "utf8");
 
@@ -118,11 +117,6 @@ try {
       }
     }
     installed.set(entry.name, manifest);
-  }
-  for (const name of ["@openlapp/cli"]) {
-    if (installed.get(name)?.dependencies?.["@openlapp/lapp"] !== version) {
-      throw new Error(`${name} does not depend on exact @openlapp/lapp@${version}`);
-    }
   }
   runNode(["--input-type=module", "-e", "const m=await import('@openlapp/lapp');if(typeof m.loadProfile!=='function')process.exit(1)"], temp);
   runNode(["-e", "const m=require('@openlapp/lapp');if(typeof m.loadProfile!=='function')process.exit(1)"], temp);
@@ -177,10 +171,7 @@ try {
   runNode(["-e", "const m=require('@openlapp/lapp/manager-contract');if(m.LAPP_MANAGER_BRIDGE_PROTOCOL_VERSION!==1)process.exit(1)"], temp);
   runNode(["--input-type=module", "-e", "const m=await import('@openlapp/lapp/manager-host');if(typeof m.createNodeLappManagerHost!=='function')process.exit(1)"], temp);
   runNode(["-e", "const m=require('@openlapp/lapp/manager-host');if(typeof m.createNodeLappManagerHost!=='function')process.exit(1)"], temp);
-  const cliVersion = runPnpm(["exec", "lapp", "--version"], { cwd: temp, env: environment }).trim();
-  if (cliVersion !== `lapp ${version}`) throw new Error(`unexpected installed CLI version: ${cliVersion}`);
-
-  console.log(`local Registry smoke passed: two packages at ${version} installed from ${registry.origin}`);
+  console.log(`local Registry smoke passed: SDK ${version} installed from ${registry.origin}`);
 } finally {
   if (nativeVaultRef) {
     runNode([

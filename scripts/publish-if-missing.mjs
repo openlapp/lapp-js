@@ -8,7 +8,6 @@ if (!packageName || !version || !distTag) {
 }
 const publishablePackages = new Set([
   "@openlapp/lapp",
-  "@openlapp/cli",
 ]);
 if (!publishablePackages.has(packageName)) throw new Error(`unexpected package: ${packageName}`);
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(version)) {
